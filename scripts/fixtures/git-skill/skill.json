@@ -1,0 +1,8 @@
+{
+  "skillId": "skill-33333333-3333-4333-8333-333333333333",
+  "name": "Chrome Git Skill",
+  "version": "1.0.0",
+  "description": "用于原地打开和 Git 对比验收",
+  "capability": "workflow",
+  "entry": "flow.start"
+}

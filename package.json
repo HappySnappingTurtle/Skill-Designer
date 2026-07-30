@@ -1,0 +1,27 @@
+{
+  "name": "skill-designer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @skill-designer/engine && npm run build -w @skill-designer/server && npm run build -w @skill-designer/web",
+    "ci": "npm run lint && npm run typecheck && npm test -- --run && npm run build",
+    "dev": "node scripts/dev.mjs",
+    "lint": "node scripts/lint-boundaries.mjs",
+    "preview": "npm run build && node scripts/preview.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -b --pretty false",
+    "start": "npm run start -w @skill-designer/server"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.19",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "1.0",
+  "skillId": "skill-22222222-2222-4222-8222-222222222222",
+  "capability": "content-only",
+  "nodes": [
+    {
+      "id": "knowledge.skill",
+      "kind": "knowledge",
+      "title": "Skill 说明",
+      "doc": "SKILL.md",
+      "position": { "x": 220, "y": 180 }
+    },
+    {
+      "id": "knowledge.versioning",
+      "kind": "knowledge",
+      "title": "版本约定",
+      "doc": "docs/versioning.md",
+      "position": { "x": 540, "y": 180 },
+      "extensions": { "exampleRole": "reference" }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge.skill-versioning",
+      "from": "knowledge.skill",
+      "to": "knowledge.versioning",
+      "kind": "knowledge",
+      "label": "包含"
+    }
+  ]
+}

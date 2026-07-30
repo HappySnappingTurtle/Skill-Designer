@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0",
+  "skillId": "skill-33333333-3333-4333-8333-333333333333",
+  "capability": "workflow",
+  "entry": "flow.start",
+  "nodes": [
+    { "id": "flow.start", "kind": "start", "title": "开始" },
+    { "id": "flow.git-check", "kind": "step", "title": "检查 Git 差异" },
+    { "id": "flow.end", "kind": "end", "title": "完成" }
+  ],
+  "edges": [
+    { "id": "edge.start-check", "from": "flow.start", "to": "flow.git-check", "kind": "flow" },
+    { "id": "edge.check-end", "from": "flow.git-check", "to": "flow.end", "kind": "flow" }
+  ]
+}

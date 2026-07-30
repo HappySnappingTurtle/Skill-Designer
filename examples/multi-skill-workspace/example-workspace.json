@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1.0",
+  "name": "Skill Designer 多 Skill 示例",
+  "members": [
+    {
+      "relativePath": "skills/release-review",
+      "skillId": "skill-11111111-1111-4111-8111-111111111111",
+      "capability": "workflow"
+    },
+    {
+      "relativePath": "skills/api-knowledge",
+      "skillId": "skill-22222222-2222-4222-8222-222222222222",
+      "capability": "content-only"
+    }
+  ]
+}
