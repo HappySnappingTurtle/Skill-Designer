@@ -323,7 +323,7 @@ async function waitForRun(service: BenchmarkRunnerService, runId: string, status
   for (;;) {
     const record = await service.get(projectId, runId);
     if (record.status === status) return record;
-    if (Date.now() - started > 2_000) throw new Error(`timed out waiting for ${status}, got ${record.status}`);
+    if (Date.now() - started > 2_000) throw new Error(`timed out waiting for ${status}, got ${record.status}: ${JSON.stringify(record.failure ?? null)}`);
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }

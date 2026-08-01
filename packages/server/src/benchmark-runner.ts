@@ -565,7 +565,7 @@ export class BenchmarkRunnerService {
     await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
     const temporary = `${target}.${randomUUID()}.tmp`;
     await writeFile(temporary, JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });
-    await rename(temporary, target);
+    await replaceFile(temporary, target);
   }
 
   private async read(projectId: string, benchmarkRunId: string): Promise<BenchmarkRunRecord> {
@@ -700,6 +700,19 @@ function asRecord(value: unknown): Record<string, unknown> | null { return typeo
 function isReasoningEffort(value: unknown): value is ModelReasoningEffort { return ["none", "low", "medium", "high", "xhigh", "max"].includes(String(value)); }
 function isHumanVerdict(value: unknown): value is BenchmarkHumanVerdict { return value === "passed" || value === "failed" || value === "inconclusive"; }
 function activeBenchmarkStatus(status: BenchmarkRunRecord["status"]): boolean { return status === "queued" || status === "preparing" || status === "running"; }
+async function replaceFile(source: string, target: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const retryable = process.platform === "win32" && ["EACCES", "EBUSY", "EPERM"].includes(code ?? "");
+      if (!retryable || attempt >= 6) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+    }
+  }
+}
 function assertProjectId(value: string): void { if (!/^project-[0-9a-f-]{36}$/iu.test(value)) throw new AppError(400, "invalid_project_id", "Project ID 无效"); }
 function assertWorkspaceId(value: string): void { if (!/^workspace-[0-9a-f-]{36}$/iu.test(value)) throw new AppError(400, "invalid_workspace_id", "Workspace ID 无效"); }
 function assertCaseId(value: string): void { if (!/^case-[0-9a-f-]{36}$/iu.test(value)) throw new AppError(400, "invalid_case_id", "Case ID 无效"); }
