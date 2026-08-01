@@ -67,6 +67,13 @@ afterEach(async () => {
 });
 
 describe("genericEngineCli", () => {
+  it("documents that rejected transitions persist Trace without moving the run", () => {
+    const usage = genericEngineUsage();
+    expect(usage).toContain("keeps the current node, step, and variables unchanged");
+    expect(usage).toContain("persisting an `engine.reject` Trace event");
+    expect(usage).not.toContain("without modifying the state file");
+  });
+
   it("verifies every declared package file and reports tampered or missing assets", async () => {
     const verified = JSON.parse((await execFileAsync(process.execPath, [cli, "verify"])).stdout) as { valid: boolean; checkedFiles: number };
     expect(verified).toMatchObject({ valid: true, checkedFiles: 5 });

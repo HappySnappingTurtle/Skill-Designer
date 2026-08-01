@@ -258,6 +258,6 @@ Checks every file declared by \`export-manifest.json\` against its recorded size
 
 \`node engine/skill-engine.mjs run status --state ./run.json\`
 
-Every command writes one JSON result to stdout. \`next\` rejects undeclared or condition-disabled targets without modifying the state file. The state file contains variables and engine Trace; keep it outside the Skill directory when the package must remain immutable.
+Every command writes one JSON result to stdout. When \`next\` rejects an undeclared or condition-disabled target, it keeps the current node, step, and variables unchanged while persisting an \`engine.reject\` Trace event. The state file contains variables and engine Trace; keep it outside the Skill directory when the package must remain immutable.
 `;
 }

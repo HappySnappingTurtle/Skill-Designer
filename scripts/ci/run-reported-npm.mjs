@@ -25,14 +25,20 @@ child.stderr.setEncoding("utf8").on("data", (chunk) => {
   process.stderr.write(chunk);
 });
 
-child.once("error", (error) => {
-  reportFailure(`${error.name}: ${error.message}`).finally(() => process.exit(1));
-});
-
-child.once("close", (code) => {
-  if (code === 0) return;
-  reportFailure(captured).finally(() => process.exit(code ?? 1));
-});
+try {
+  const code = await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  if (code !== 0) {
+    await reportFailure(captured);
+    process.exitCode = code ?? 1;
+  }
+} catch (error) {
+  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  await reportFailure(message);
+  process.exitCode = 1;
+}
 
 async function reportFailure(output) {
   const diagnostic = output.trim().split(/\r?\n/u).slice(-100).join("\n").slice(-60_000) || "命令没有输出诊断信息";
