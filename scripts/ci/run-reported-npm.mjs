@@ -12,6 +12,7 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const child = spawn(npmCommand, ["run", script, ...scriptArguments], {
   cwd: process.cwd(),
   env: process.env,
+  shell: process.platform === "win32",
   stdio: ["inherit", "pipe", "pipe"]
 });
 let captured = "";
