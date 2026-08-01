@@ -100,6 +100,7 @@ export class BenchmarkRunnerService {
   private readonly idFactory: () => string;
   private readonly queue: string[] = [];
   private readonly controllers = new Map<string, AbortController>();
+  private readonly recordFileQueues = new Map<string, Promise<void>>();
   private draining = false;
 
   constructor(options: BenchmarkRunnerServiceOptions) {
@@ -562,22 +563,42 @@ export class BenchmarkRunnerService {
 
   private async save(record: BenchmarkRunRecord): Promise<void> {
     const target = this.recordFile(record.projectId, record.benchmarkRunId);
-    await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-    const temporary = `${target}.${randomUUID()}.tmp`;
-    await writeFile(temporary, JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });
-    await replaceFile(temporary, target);
+    await this.accessRecordFile(target, async () => {
+      await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+      const temporary = `${target}.${randomUUID()}.tmp`;
+      await writeFile(temporary, JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });
+      await replaceFile(temporary, target);
+    });
   }
 
   private async read(projectId: string, benchmarkRunId: string): Promise<BenchmarkRunRecord> {
+    const target = this.recordFile(projectId, benchmarkRunId);
+    return this.accessRecordFile(target, async () => {
+      try {
+        const record = JSON.parse(await readFile(target, "utf8")) as BenchmarkRunRecord;
+        if (record.projectId !== projectId || record.benchmarkRunId !== benchmarkRunId) throw new AppError(409, "benchmark_run_identity_mismatch", "Benchmark Run 身份不一致");
+        record.humanReviews ??= [];
+        return record;
+      } catch (error) {
+        if (error instanceof AppError) throw error;
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new AppError(404, "benchmark_run_not_found", "Benchmark Run 不存在");
+        throw error;
+      }
+    });
+  }
+
+  private async accessRecordFile<T>(target: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.recordFileQueues.get(target) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.then(() => current);
+    this.recordFileQueues.set(target, tail);
+    await previous;
     try {
-      const record = JSON.parse(await readFile(this.recordFile(projectId, benchmarkRunId), "utf8")) as BenchmarkRunRecord;
-      if (record.projectId !== projectId || record.benchmarkRunId !== benchmarkRunId) throw new AppError(409, "benchmark_run_identity_mismatch", "Benchmark Run 身份不一致");
-      record.humanReviews ??= [];
-      return record;
-    } catch (error) {
-      if (error instanceof AppError) throw error;
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new AppError(404, "benchmark_run_not_found", "Benchmark Run 不存在");
-      throw error;
+      return await operation();
+    } finally {
+      release();
+      if (this.recordFileQueues.get(target) === tail) this.recordFileQueues.delete(target);
     }
   }
 

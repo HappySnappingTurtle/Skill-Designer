@@ -68,6 +68,8 @@ describe("BenchmarkRunnerService", () => {
 
     const queued = await service.start(projectId, { workspaceId, caseId, reasoningEffort: "low" });
     expect(queued.status).toBe("queued");
+    const concurrentReads = await Promise.all(Array.from({ length: 32 }, () => service.get(projectId, queued.benchmarkRunId)));
+    expect(concurrentReads.every((record) => record.benchmarkRunId === queued.benchmarkRunId)).toBe(true);
     const completed = await waitForRun(service, queued.benchmarkRunId, "completed");
 
     expect(completed).toMatchObject({
