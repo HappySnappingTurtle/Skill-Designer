@@ -327,7 +327,7 @@ td code { font-size: 11px; color: #65716c; }
 .graph-editor-from-changes { width: 100%; min-height: 32px; border: 1px solid var(--graph-border); border-radius: 7px; display: flex; align-items: center; justify-content: center; gap: 6px; background: transparent; color: var(--graph-fg); font-size: 12px; }
 .graph-editor-from-changes:hover { border-color: var(--graph-accent); color: var(--graph-accent); }
 .graph-preview-save { width: 100%; min-height: 32px; margin-top: 10px; border: 1px solid #2da44e55; border-radius: 8px; display: flex; align-items: center; justify-content: center; gap: 6px; background: #2da44e1a; color: #1a7f37; font-size: 12px; }
-.graph-interaction-hint { position: absolute; z-index: 5; left: 50%; bottom: 12px; max-width: 52%; transform: translateX(-50%); color: var(--graph-dim); opacity: .55; font-size: 11px; text-align: center; pointer-events: none; }
+.graph-interaction-hint { position: absolute; z-index: 5; left: 50%; bottom: 12px; width: max-content; max-width: calc(100% - 32px); transform: translateX(-50%); color: var(--graph-dim); opacity: .55; font-size: 11px; text-align: center; white-space: nowrap; pointer-events: none; }
 .graph-detail { height: 100%; min-height: 0; display: flex; flex-direction: column; }
 .graph-detail-head { flex: 0 0 auto; padding: 14px 16px 10px; border-bottom: 1px solid var(--graph-border); }
 .graph-detail-head h3 { margin: 0 0 3px; color: var(--graph-fg); font-size: 15px; line-height: 1.5; }
