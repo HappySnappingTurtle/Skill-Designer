@@ -29,7 +29,7 @@ jobs:
       - name: Lint boundaries
         run: npm run lint
       - name: Typecheck
-        run: npm run typecheck
+        run: node scripts/ci/run-reported-npm.mjs "Typecheck diagnostics" typecheck
       - name: Test
         run: npm test -- --run
       - name: Build application
