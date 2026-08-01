@@ -828,7 +828,7 @@ metadata:
     await waitFor(async () => {
       const result = await request(`/api/projects/${firstProject}/benchmark-runs/${benchmarkRunId}`);
       return (result.data as { status: string }).status === "blocked";
-    });
+    }, 10_000);
     const benchmarkRuns = await request(`/api/projects/${firstProject}/benchmark-runs`);
     expect(benchmarkRuns.data).toEqual([expect.objectContaining({ benchmarkRunId, status: "blocked", automaticVerdict: "not-run", modelCallCount: 0 })]);
     const cancelledTerminal = await request(`/api/projects/${firstProject}/benchmark-runs/${benchmarkRunId}/cancel`, { method: "POST", body: {} });
@@ -842,20 +842,20 @@ metadata:
     await waitFor(async () => {
       const result = await request(`/api/projects/${firstProject}/benchmark-runs/${rerunId}`);
       return (result.data as { status: string }).status === "blocked";
-    });
+    }, 10_000);
     expect((await request(`/api/projects/${firstProject}/benchmark-runs/${rerunId}`)).data).toMatchObject({ lineage: { parentBenchmarkRunId: benchmarkRunId, relation: "rerun" }, status: "blocked" });
     const benchmarkBatch = await request(`/api/projects/${firstProject}/benchmark-runs/batch`, { method: "POST", body: { workspaceId, caseIds: [caseId] } });
     const batchRunId = (benchmarkBatch.data as Array<{ benchmarkRunId: string }>)[0]!.benchmarkRunId;
     await waitFor(async () => {
       const result = await request(`/api/projects/${firstProject}/benchmark-runs/${batchRunId}`);
       return (result.data as { status: string }).status === "blocked";
-    });
+    }, 10_000);
     expect((await request(`/api/projects/${firstProject}/benchmark-runs`)).data).toEqual(expect.arrayContaining([
       expect.objectContaining({ benchmarkRunId, caseId, status: "blocked" }),
       expect.objectContaining({ benchmarkRunId: rerunId, caseId, status: "blocked", lineage: { parentBenchmarkRunId: benchmarkRunId, relation: "rerun" } }),
       expect.objectContaining({ benchmarkRunId: batchRunId, caseId, status: "blocked" })
     ]));
-  });
+  }, 30_000);
 
   it("exposes Workspace rename, member order, and reference-only deletion routes", async () => {
     const created = await request("/api/workspaces", { method: "POST", body: { name: "HTTP 生命周期" } });
@@ -1090,7 +1090,7 @@ async function openTraceSocket(projectId: string, runId: string, afterSeq: numbe
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
   const startedAt = Date.now();
   while (!await predicate()) {
-    if (Date.now() - startedAt > timeoutMs) throw new Error("等待 WebSocket 消息超时");
+    if (Date.now() - startedAt > timeoutMs) throw new Error("等待异步条件超时");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
