@@ -16,7 +16,7 @@
     "release:build": "node scripts/release/build-release.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -b --pretty false",
+    "typecheck": "node node_modules/typescript/bin/tsc -b --pretty false",
     "start": "npm run start -w @skill-designer/server"
   },
   "devDependencies": {
