@@ -42,13 +42,17 @@ try {
 }
 
 async function reportFailure(output) {
-  const diagnostic = output.trim().split(/\r?\n/u).slice(-100).join("\n").slice(-60_000) || "命令没有输出诊断信息";
+  const diagnostic = stripAnsi(output).trim().split(/\r?\n/u).slice(-40).join("\n").slice(-12_000) || "命令没有输出诊断信息";
   process.stdout.write(`::error title=${escapeWorkflowCommand(title)}::${escapeWorkflowCommand(diagnostic)}\n`);
 
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) {
     await appendFile(summaryPath, `## ${title}\n\n\`\`\`text\n${diagnostic}\n\`\`\`\n`, "utf8");
   }
+}
+
+function stripAnsi(value) {
+  return String(value).replace(/\u001B\[[0-?]*[ -/]*[@-~]/gu, "");
 }
 
 function escapeWorkflowCommand(value) {
