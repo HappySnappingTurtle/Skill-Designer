@@ -1,14 +1,13 @@
 # Skill Designer 1.0 已知限制
 
-> 状态日期：2026-07-31。当前仓库版本为 0.1.0 开发预览，不应标记为 1.0 正式发布。
+> 状态日期：2026-08-01。当前仓库版本为 0.1.0 开发预览，不应标记为 1.0 正式发布。
 
 ## 尚未完成的发布门禁
 
-- Windows 浏览器、异常退出恢复和安装/卸载尚未取得真实 runner 证据。
-- Linux/macOS/Windows 远端 CI 配置已存在，承载 action 已升级到官方 v7；但公开远端最新仍是旧提交 `566ea31` 的 run `30523525492`，macOS/Windows Job 分别退出 127/1，旧矩阵没有 Linux Job，因此没有可核对的三系统成功记录。
+- Windows 浏览器、异常退出恢复和安装/卸载按当前计划暂缓，尚未取得真实 Windows 操作证据。GitHub Actions run `30689522606` 的 Windows Node 20 Job 成功和 Windows ZIP 构建只证明自动化门禁，不替代这些实机验收。
 - 当前 macOS 环境没有 Docker CLI、固定 digest runner 镜像和真实模型 API Key，因此真实沙箱 Benchmark、completed 人工判定和 post-repair Benchmark 尚未完成。
-- 用户真实验收目前只有一个根 Skill `mdd-backend-extend-develop`；还缺 2-4 个独立 Skill、真实 content-only 样本和同 Workspace 多 Skill 并行运行验收。
-- Generic Export 已在本机 clean-room 运行，但还缺另一个独立 Agent/环境和 Windows Node 对照。
+- 三个真实 Skill 已在同一 Workspace 完成 workflow/content-only 产品链路验收，但没有真实 Docker 与模型条件，因此不能把这些确定性运行称为真实沙箱 Benchmark。
+- Generic Export 已由当前 Codex 使用导出目录外状态文件完成 clean-room 运行，最终 ZIP SHA-256 为 `ba73c8965f18028a1adf45b696e7ce05bc39623a95b39a874e19455ff83271c4`。Claude CLI 返回 `403 Request not allowed`，独立 Codex CLI 在首轮模型采样阶段超时，均未形成独立外部 Agent 成功记录；另缺 Windows Node 对照。
 - macOS ZIP 未做 Apple 签名/公证，Windows ZIP 未做 Authenticode 签名。`release-manifest.json` 和 `doctor` 已把当前产物严格声明为 `development-preview / unsigned / integrity-only / local-development`，并明确 `publisherTrustEstablished: false`；发布 SHA-256 和包内逐文件清单仍只检查完整性，不建立发布者身份信任。正式签名发布链仍是未完成门禁。
 
 ## 1.0 产品边界

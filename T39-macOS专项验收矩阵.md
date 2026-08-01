@@ -2,7 +2,7 @@
 
 ## 1. 范围
 
-本矩阵记录 Skill Designer 1.0 在 macOS arm64、可见 Google Chrome 上已经执行的非功能验收。它不替代 Windows 浏览器、Windows 异常退出和远端 Linux/macOS/Windows CI 结果。
+本矩阵记录 Skill Designer 1.0 在 macOS arm64、可见 Google Chrome 上已经执行的非功能验收，并补充远端 Node 20 三系统 CI 状态。它不替代 Windows 浏览器和 Windows 异常退出实机验收。
 
 共同要求：浏览器使用 `channel: "chrome", headless: false`；桌面流程必须实际操作页面；移动端使用 `390x844`；除用例明确预期的安全拒绝外，控制台错误和失败请求必须为 0。
 
@@ -23,16 +23,17 @@
 
 | 平台 | 浏览器业务矩阵 | 异常退出矩阵 | 指纹/引擎/导出一致性 |
 | --- | --- | --- | --- |
-| macOS arm64 | 当前表内项目通过 | 三个文档重命名文件步骤通过 | 本机 CI 通过；公开旧提交 run `30523525492` 的 macOS Job 退出 127，当前 v7 action 工作树尚未远端重跑 |
-| Windows | 待执行 | 待执行真实进程终止与文件恢复 | 公开旧提交 run `30523525492` 的 Windows Job 退出 1，不能作为通过记录 |
-| Linux | 不属于 1.0 桌面 UI 正式平台 | 不要求桌面异常恢复 | 当前工作树已加入矩阵，旧提交没有 Linux Job，尚无远端记录 |
+| macOS arm64 | 当前表内项目通过 | 三个文档重命名文件步骤通过 | 本机门禁通过；GitHub Actions run `30689522606` 的 macOS Node 20 Job 全部通过 |
+| Windows | 按用户决定暂缓 | 待执行真实进程终止与文件恢复 | GitHub Actions run `30689522606` 的 Windows Node 20 Job 已完成依赖安装、Lint、Typecheck、198 项测试（4 项平台预期跳过）、应用构建和发布构建；不等同于浏览器实机验收 |
+| Linux | 不属于 1.0 桌面 UI 正式平台 | 不要求桌面异常恢复 | GitHub Actions run `30689522606` 的 Ubuntu Node 20 Job 全部通过 |
 
 ## 4. 未完成条件
 
 T39 保持进行中，直至：
 
 1. Windows 主流浏览器完成与 macOS 对照的核心业务、500 节点、100 文档和 50 成员 Workspace 验收；
-2. Windows 完成事务异常退出与恢复矩阵；
-3. 远端 Linux、macOS、Windows CI 对核心引擎、Generic Export 和固定指纹向量形成可追溯通过记录。
+2. Windows 完成事务异常退出与恢复矩阵。
+
+远端 Linux、macOS、Windows CI 对核心引擎、Generic Export 和固定指纹向量的条件已由 run `30689522606` 关闭。T39 仍保持进行中，CI 成功和 Windows ZIP 构建均不得替代上述两项真实 Windows 操作证据。
 
 任何未执行项均不得用模拟平台结果替代。
