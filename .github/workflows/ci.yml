@@ -26,4 +26,13 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run ci
+      - name: Lint boundaries
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test -- --run
+      - name: Build application
+        run: npm run build
+      - name: Build release packages
+        run: npm run release:build
