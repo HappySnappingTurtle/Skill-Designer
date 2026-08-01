@@ -31,7 +31,7 @@ jobs:
       - name: Typecheck
         run: node scripts/ci/run-reported-npm.mjs "Typecheck diagnostics" typecheck
       - name: Test
-        run: npm test -- --run
+        run: node scripts/ci/run-reported-npm.mjs "Test diagnostics" test -- --run
       - name: Build application
         run: npm run build
       - name: Build release packages

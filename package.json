@@ -14,7 +14,7 @@
     "preview": "npm run build && node scripts/preview.mjs",
     "release": "npm run build && npm run release:build",
     "release:build": "node scripts/release/build-release.mjs",
-    "test": "vitest run",
+    "test": "node node_modules/vitest/vitest.mjs run",
     "test:watch": "vitest",
     "typecheck": "node node_modules/typescript/bin/tsc -b --pretty false",
     "start": "npm run start -w @skill-designer/server"
