@@ -41,6 +41,7 @@ interface Props {
   traceMissingNodeIds?: string[];
   changeNodeStates?: Record<string, GraphNodeChangeState>;
   fitPadding?: number;
+  fitDistanceScale?: number;
   embeddedTitle?: string;
 }
 
@@ -78,6 +79,7 @@ const edgeColors: Record<GraphEdgeKind, string> = {
 };
 const MAX_2D_FIT_ZOOM = 3.2;
 const ORIGINAL_3D_FIT_DISTANCE_SCALE = 0.48;
+const SMALL_3D_FIT_DISTANCE_SCALE = 0.8;
 
 const legendNodeKinds: GraphNodeKind[] = [...graphNodeTypeRegistry]
   .sort((left, right) => left.legendOrder - right.legendOrder)
@@ -108,6 +110,7 @@ export const SkillGraphCanvas = forwardRef<SkillGraphCanvasHandle, Props>(functi
   traceMissingNodeIds = [],
   changeNodeStates = {},
   fitPadding,
+  fitDistanceScale,
   embeddedTitle
 }, forwardedRef) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -217,7 +220,7 @@ export const SkillGraphCanvas = forwardRef<SkillGraphCanvasHandle, Props>(functi
     if (mode !== "3d" || largeGraph || size.width <= 0 || size.height <= 0) return;
     const timer = window.setTimeout(() => fit3DGraph(700, fitPadding ?? 80), 650);
     return () => window.clearTimeout(timer);
-  }, [fitPadding, graphData, largeGraph, mode, size.height, size.width]);
+  }, [fitDistanceScale, fitPadding, graphData, largeGraph, mode, size.height, size.width]);
 
   useEffect(() => {
     setSettledMode(null);
@@ -296,16 +299,39 @@ export const SkillGraphCanvas = forwardRef<SkillGraphCanvasHandle, Props>(functi
   function fit3DGraph(duration: number, padding: number) {
     const instance = graph3DRef.current;
     if (!instance) return;
+    if (!largeGraph && graphData.nodes.length <= 2) {
+      const positions = graphData.nodes.map((node) => ({
+        x: Number.isFinite(node.x) ? node.x! : 0,
+        y: Number.isFinite(node.y) ? node.y! : 0,
+        z: Number.isFinite(node.z) ? node.z! : 0
+      }));
+      const center = positions.reduce(
+        (result, position) => ({ x: result.x + position.x, y: result.y + position.y, z: result.z + position.z }),
+        { x: 0, y: 0, z: 0 }
+      );
+      center.x /= positions.length || 1;
+      center.y /= positions.length || 1;
+      center.z /= positions.length || 1;
+      const extent = Math.max(0, ...positions.map((position) => Math.hypot(position.x - center.x, position.y - center.y, position.z - center.z)));
+      const distance = Math.max(150, extent * 3 + 100);
+      instance.cameraPosition(
+        { x: center.x + distance * 0.32, y: center.y + distance * 0.18, z: center.z + distance },
+        center,
+        duration
+      );
+      return;
+    }
     instance.zoomToFit(duration, padding);
-    if (largeGraph || graphData.nodes.length < 12) return;
+    if (largeGraph) return;
     window.setTimeout(() => {
       const camera = instance.camera?.();
       const target = instance.controls?.()?.target;
       if (!camera?.position || !target) return;
+      const distanceScale = fitDistanceScale ?? (graphData.nodes.length < 12 ? SMALL_3D_FIT_DISTANCE_SCALE : ORIGINAL_3D_FIT_DISTANCE_SCALE);
       instance.cameraPosition({
-        x: target.x + (camera.position.x - target.x) * ORIGINAL_3D_FIT_DISTANCE_SCALE,
-        y: target.y + (camera.position.y - target.y) * ORIGINAL_3D_FIT_DISTANCE_SCALE,
-        z: target.z + (camera.position.z - target.z) * ORIGINAL_3D_FIT_DISTANCE_SCALE
+        x: target.x + (camera.position.x - target.x) * distanceScale,
+        y: target.y + (camera.position.y - target.y) * distanceScale,
+        z: target.z + (camera.position.z - target.z) * distanceScale
       }, { x: target.x, y: target.y, z: target.z }, 220);
     }, duration + 30);
   }
@@ -376,8 +402,7 @@ export const SkillGraphCanvas = forwardRef<SkillGraphCanvasHandle, Props>(functi
   }
 
   const focusTitle = focusRootId ? graph.nodes.find((node) => node.id === focusRootId)?.title ?? focusRootId : "";
-  // The source viewer keeps a viewport-height canvas below its 46px toolbar.
-  const graphHeight = embeddedControls ? size.height : size.height + 46;
+  const graphHeight = size.height;
 
   function locateEmbeddedNode() {
     const normalized = embeddedQuery.trim().toLocaleLowerCase();
@@ -418,7 +443,7 @@ export const SkillGraphCanvas = forwardRef<SkillGraphCanvasHandle, Props>(functi
       linkSource="source"
       linkTarget="target"
       backgroundColor="rgba(0,0,0,0)"
-      nodeLabel={() => ""}
+      nodeLabel={(node) => node.title}
       nodeCanvasObject={(node, context, scale) => draw2DNode(node, context, scale, theme, {
         selected: node.id === selectedNodeId,
         dimmed: !nodeInContext(node),
@@ -477,7 +502,7 @@ export const SkillGraphCanvas = forwardRef<SkillGraphCanvasHandle, Props>(functi
       backgroundColor="rgba(0,0,0,0)"
       showNavInfo={false}
       rendererConfig={{ antialias: true, alpha: true, preserveDrawingBuffer: true }}
-      nodeLabel={() => ""}
+      nodeLabel={(node) => node.title}
       nodeThreeObject={(node) => makeNodeSprite(node, node.id === selectedNodeId, node.id === hoveredNodeId, nodeInContext(node), theme, largeGraph, visualState(node.id), changeNodeStates[node.id])}
       linkColor={(link) => traversedEdgeIds.has(link.id) ? "#238362" : linkColor(link, selectedEdgeId, linkInContext(link), theme, "3d", Boolean(hoveredNodeId ?? selectedNodeId))}
       linkWidth={(link) => traversedEdgeIds.has(link.id) ? 2.4 : link.id === selectedEdgeId ? 1.5 : selectedNodeId && linkInContext(link) ? 1.5 : 0.4}
@@ -600,9 +625,10 @@ function draw2DNode(
     context.setLineDash([]);
   }
   if (state.showLabel && !state.dimmed) {
+    const label = compactGraphLabel(node.title);
     const fontSize = 11 / Math.max(scale, 0.9);
     context.font = `500 ${fontSize}px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif`;
-    const width = context.measureText(node.title).width + 8 / scale;
+    const width = context.measureText(label).width + 8 / scale;
     const height = fontSize * 1.5;
     const top = y + radius + 2.5 / scale;
     context.fillStyle = graphTheme.labelBg;
@@ -612,7 +638,7 @@ function draw2DNode(
     context.fillStyle = graphTheme.label;
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillText(node.title, x, top + height / 2);
+    context.fillText(label, x, top + height / 2);
   }
   context.restore();
 }
@@ -627,8 +653,9 @@ function makeNodeSprite(node: GraphNodeDatum, selected: boolean, hovered: boolea
   const context = canvas.getContext("2d")!;
   const fontSize = (largeGraph && !selected ? 11.5 : 12.5) * oversample;
   const padding = 4 * oversample;
+  const label = compactGraphLabel(node.title);
   context.font = `500 ${fontSize}px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif`;
-  const textWidth = Math.ceil(context.measureText(node.title).width);
+  const textWidth = Math.ceil(context.measureText(label).width);
   const pillWidth = textWidth + 10 * oversample;
   const pillHeight = fontSize * 1.5;
   canvas.width = Math.ceil(Math.max(pillWidth, glowRadius * 2) + padding * 2);
@@ -691,7 +718,7 @@ function makeNodeSprite(node: GraphNodeDatum, selected: boolean, hovered: boolea
   context.fillStyle = graphTheme.label;
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillText(node.title, cx, pillY + pillHeight / 2 + oversample * 0.5);
+  context.fillText(label, cx, pillY + pillHeight / 2 + oversample * 0.5);
   const texture = new CanvasTexture(canvas);
   texture.minFilter = LinearFilter;
   const material = new SpriteMaterial({ map: texture, transparent: true, depthWrite: false, opacity: active ? 1 : graphTheme.dimAlpha });
@@ -700,6 +727,11 @@ function makeNodeSprite(node: GraphNodeDatum, selected: boolean, hovered: boolea
   const hoverScale = hovered ? 1.14 : 1;
   sprite.scale.set(canvas.width * scale / oversample * hoverScale, canvas.height * scale / oversample * hoverScale, 1);
   return sprite;
+}
+
+function compactGraphLabel(title: string): string {
+  const characters = Array.from(title);
+  return characters.length <= 36 ? title : `${characters.slice(0, 35).join("")}…`;
 }
 
 function linkColor(link: GraphLinkDatum, selectedEdgeId: string | null, inContext: boolean, themeName: GraphTheme, mode: GraphViewMode, hasContext: boolean): string {

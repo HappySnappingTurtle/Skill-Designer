@@ -1,10 +1,11 @@
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { genericEngineCli } from "../src/generic-export.js";
+import { genericEngineCli, genericEngineUsage } from "../src/generic-export.js";
 
 const execFileAsync = promisify(execFile);
 let root: string;
@@ -15,6 +16,7 @@ beforeEach(async () => {
   cli = path.join(root, "engine", "skill-engine.mjs");
   await mkdir(path.join(root, "engine"), { recursive: true });
   await mkdir(path.join(root, "graph"), { recursive: true });
+  await mkdir(path.join(root, "docs"), { recursive: true });
   await writeFile(path.join(root, "skill.json"), JSON.stringify({ skillId: "skill-11111111-1111-4111-8111-111111111111", name: "条件流程" }));
   await writeFile(path.join(root, "graph", "main.json"), JSON.stringify({
     schemaVersion: "1.0",
@@ -43,7 +45,21 @@ beforeEach(async () => {
       { id: "edge.rejected", from: "flow.start", to: "flow.rejected", kind: "flow", condition: { op: "notEquals", left: { kind: "ref", path: "skill.approved" }, right: { kind: "literal", value: true } } }
     ]
   }));
+  await writeFile(path.join(root, "docs", "guide.md"), "# Guide\n\nIntegrity fixture.\n");
   await writeFile(cli, genericEngineCli());
+  await writeFile(path.join(root, "engine", "README.md"), genericEngineUsage());
+  const packageFiles = await Promise.all(["skill.json", "graph/main.json", "docs/guide.md", "engine/skill-engine.mjs", "engine/README.md"].map(async (relativePath) => {
+    const bytes = await readFile(path.join(root, relativePath));
+    return { path: relativePath, size: bytes.length, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}` };
+  }));
+  await writeFile(path.join(root, "export-manifest.json"), JSON.stringify({
+    schemaVersion: "1.0",
+    profile: "generic/1",
+    skillId: "skill-11111111-1111-4111-8111-111111111111",
+    revisionId: "revision-11111111-1111-4111-8111-111111111111",
+    contentHash: "sha256:" + "1".repeat(64),
+    files: packageFiles
+  }));
 });
 
 afterEach(async () => {
@@ -51,6 +67,23 @@ afterEach(async () => {
 });
 
 describe("genericEngineCli", () => {
+  it("verifies every declared package file and reports tampered or missing assets", async () => {
+    const verified = JSON.parse((await execFileAsync(process.execPath, [cli, "verify"])).stdout) as { valid: boolean; checkedFiles: number };
+    expect(verified).toMatchObject({ valid: true, checkedFiles: 5 });
+
+    const guide = path.join(root, "docs", "guide.md");
+    await writeFile(guide, "tampered\n");
+    await expect(execFileAsync(process.execPath, [cli, "verify"])).rejects.toMatchObject({
+      stderr: expect.stringMatching(/"code":"package_integrity_failed".*"path":"docs\/guide\.md".*"code":"mismatch"/u)
+    });
+
+    await writeFile(guide, "# Guide\n\nIntegrity fixture.\n");
+    await rm(path.join(root, "engine", "README.md"));
+    await expect(execFileAsync(process.execPath, [cli, "verify"])).rejects.toMatchObject({
+      stderr: expect.stringMatching(/"code":"package_integrity_failed".*"path":"engine\/README\.md".*"code":"missing"/u)
+    });
+  });
+
   it("evaluates conditions and records a rejected target without moving the run", async () => {
     const approvedTransitions = JSON.parse((await execFileAsync(process.execPath, [cli, "transitions", "flow.start", "--variables", JSON.stringify({ approved: true })])).stdout) as Array<{ to: string }>;
     expect(approvedTransitions.map((item) => item.to)).toEqual(["flow.approved"]);

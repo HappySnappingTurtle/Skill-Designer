@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { request as httpRequest } from "node:http";
 import os from "node:os";
@@ -134,6 +134,52 @@ async function request(
 }
 
 describe("workspace HTTP API", () => {
+  it("passes Benchmark RuntimeArtifact references into storage cleanup", async () => {
+    const created = await request("/api/workspaces", { method: "POST", body: { name: "HTTP Artifact 存储" } });
+    const workspaceId = (created.data as { workspaceId: string }).workspaceId;
+    const detail = await request(`/api/workspaces/${workspaceId}/members`, {
+      method: "POST",
+      body: { name: "HTTP Artifact Skill", capability: "workflow" }
+    });
+    const member = (detail.data as { members: Array<{ projectId: string; skillId: string }> }).members[0]!;
+    const started = await request(`/api/projects/${member.projectId}/runs`, { method: "POST", body: { workspaceId } });
+    const runtimeArtifact = (started.data as { artifact: import("@skill-designer/engine").RuntimeArtifact }).artifact;
+    const artifactDir = path.join(root, "projects", member.projectId, "runtime-artifacts");
+    const benchmarkArtifactId = "artifact-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const orphanArtifactId = "artifact-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const writeArtifact = async (artifactId: string) => {
+      const artifact = { ...structuredClone(runtimeArtifact), artifactId, createdAt: "2026-07-18T04:00:00.000Z" };
+      const file = path.join(artifactDir, `${artifactId}.json`);
+      await writeFile(file, JSON.stringify(artifact, null, 2) + "\n", "utf8");
+      return file;
+    };
+    const benchmarkArtifactFile = await writeArtifact(benchmarkArtifactId);
+    const orphanArtifactFile = await writeArtifact(orphanArtifactId);
+    const benchmarkRunId = "benchmark-run-cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const benchmarkFile = path.join(root, "benchmark", "runs", member.projectId, `${benchmarkRunId}.json`);
+    await mkdir(path.dirname(benchmarkFile), { recursive: true });
+    await writeFile(benchmarkFile, JSON.stringify({
+      schemaVersion: "1.0",
+      benchmarkRunId,
+      workspaceId,
+      projectId: member.projectId,
+      skillId: member.skillId,
+      createdAt: "2026-07-28T04:00:00.000Z",
+      fingerprint: { runtimeArtifactId: benchmarkArtifactId }
+    }, null, 2) + "\n", "utf8");
+
+    const status = (await request(`/api/projects/${member.projectId}/runtime-artifacts/storage?workspaceId=${workspaceId}`)).data as import("@skill-designer/engine").RuntimeArtifactStorageStatus;
+    expect(status).toMatchObject({ totalCount: 3, protectedCount: 2, orphanedCount: 1, eligibleCount: 1, benchmarkRunCount: 1 });
+    const cleanup = (await request(`/api/projects/${member.projectId}/runtime-artifacts/storage`, {
+      method: "POST",
+      body: { workspaceId }
+    })).data as import("@skill-designer/engine").RuntimeArtifactCleanupResult;
+    expect(cleanup.deletedArtifactIds).toEqual([orphanArtifactId]);
+    expect(cleanup.after).toMatchObject({ totalCount: 2, protectedCount: 2, orphanedCount: 0, eligibleCount: 0 });
+    expect((await stat(benchmarkArtifactFile)).isFile()).toBe(true);
+    await expect(readFile(orphanArtifactFile)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("lists, downloads, and deletes dual-format Bug Report history", async () => {
     const created = await request("/api/workspaces", { method: "POST", body: { name: "HTTP 报告历史" } });
     const workspaceId = (created.data as { workspaceId: string }).workspaceId;

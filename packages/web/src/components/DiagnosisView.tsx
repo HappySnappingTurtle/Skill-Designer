@@ -1,4 +1,4 @@
-import { AlertTriangle, Ban, Bug, Check, CheckCircle2, ChevronLeft, ChevronRight, FileCheck2, FileUp, Fingerprint, FlaskConical, Info, LoaderCircle, PlayCircle, SearchCheck, ShieldAlert, Trash2, Wrench, X } from "lucide-react";
+import { AlertTriangle, Ban, Bug, Check, CheckCircle2, ChevronLeft, ChevronRight, FileCheck2, FileUp, Fingerprint, FlaskConical, GitBranch, Info, LoaderCircle, PlayCircle, SearchCheck, ShieldAlert, Trash2, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { projectTraceAt, type BenchmarkCaseChangePreview, type BenchmarkRunRecord, type DiagnosisRecord, type DiagnosisRepairProposal, type DiagnosisRepairRecord, type GraphChangePreview, type ImportedBugReport, type ProjectChangeSet, type ProjectRun, type ReportBenchmarkCandidate, type ReportFixture, type WorkspaceMember } from "@skill-designer/engine";
 import { api, ApiError } from "../api";
@@ -474,6 +474,7 @@ export function DiagnosisView({ workspaceId, skill, onOpenTests, onProjectChange
               const eligibleRuns = repair?.appliedRevision ? runs.filter((run) => run.revision === repair.appliedRevision) : [];
               const eligibleBenchmarkRuns = repair?.appliedRevision ? benchmarkRuns.filter((run) => run.lineage?.relation === "post-repair" && run.lineage.repairId === repair.repairId && run.lineage.appliedRevision === repair.appliedRevision) : [];
               const selectedBenchmarkRun = eligibleBenchmarkRuns.find((run) => run.benchmarkRunId === benchmarkVerificationRunId);
+              const parentReport = repair?.lineage ? reports.find((report) => report.reportImportId === repair.lineage?.parentReportImportId) : undefined;
               return <article key={candidate.candidateId} className={candidate.category === "insufficient-evidence" ? "insufficient" : ""}>
               <header><div><span>{categoryLabel(candidate.category)}</span><h3>{candidate.title}</h3></div><small className={`confidence ${candidate.confidence}`}>{confidenceLabel(candidate.confidence)}</small></header>
               <p>{candidate.statement}</p>
@@ -482,6 +483,14 @@ export function DiagnosisView({ workspaceId, skill, onOpenTests, onProjectChange
               <section className="diagnosis-verification"><strong>验证方式 · {verificationMethodLabel(verification.method)}</strong><ul>{verification.steps.map((step) => <li key={step}><span>{step}</span></li>)}</ul><small>成功证据：{verification.successEvidence.join("；")}</small></section>
               {candidate.repair && <div className="diagnosis-repair-action">
                 <div><Wrench size={14} /><span>{candidate.repair.title}</span>{repair && <small className={`repair-status ${repair.proposalStatus === "applied" ? repair.status : repair.proposalStatus}`}>{repairStatusLabel(repair)}</small>}</div>
+                {repair && <div className="repair-lineage" aria-label="修复轮次关系">
+                  <GitBranch size={13} />
+                  {repair.lineage ? <>
+                    <button type="button" disabled={!parentReport} title={parentReport ? "打开上一轮修复报告" : "上一轮报告已不可用"} onClick={() => parentReport && selectReport(parentReport)}><span>第 {repair.round - 1} 轮</span><code>{shortId(repair.lineage.parentRepairId)}</code></button>
+                    <ChevronRight size={13} />
+                  </> : null}
+                  <div><span>第 {repair.round} 轮</span><code>{shortId(repair.repairId)}</code></div>
+                </div>}
                 {!repair || repair.proposalStatus === "rejected" ? <button className="button secondary" disabled={repairBusy} onClick={() => void proposeRepair(candidate.candidateId)}><Wrench size={14} />{repair ? "重新生成修复提案" : "生成修复提案"}</button>
                   : !repair.appliedRevision ? <button className="button secondary" disabled={repairBusy} onClick={() => void openRepair(repair)}><Wrench size={14} />{repair.proposalStatus === "conflicted" ? "查看冲突提案" : "查看待确认提案"}</button>
                     : repair.status === "unverified" ? selected.report.source.kind === "benchmark" ? <div className="repair-verification-controls benchmark-repair-controls">
@@ -494,7 +503,7 @@ export function DiagnosisView({ workspaceId, skill, onOpenTests, onProjectChange
                       <button className="button secondary" onClick={onOpenTests}><PlayCircle size={14} />前往测试运行</button>
                       <select aria-label="选择修复后运行" value={verificationRunId} onChange={(event) => setVerificationRunId(event.target.value)}><option value="">选择修复后运行</option>{eligibleRuns.map((run) => <option key={run.runId} value={run.runId}>{shortId(run.runId)} · {runtimeStatusLabel(run.state.status)}</option>)}</select>
                       <button className="button secondary" disabled={!verificationRunId || repairBusy} onClick={() => void verifyRepair(repair)}><Check size={14} />验证</button>
-                    </div> : repair.verification && <div className="repair-verification-evidence">{repair.verification.evidence.map((item) => <span key={item}><CheckCircle2 size={12} />{item}</span>)}</div>}
+                    </div> : repair.verification && <div className={`repair-verification-evidence ${repair.status}`}>{repair.verification.evidence.map((item) => <span key={item}>{repair.status === "failed" ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}{item}</span>)}<button className="button ghost" onClick={onOpenTests}><PlayCircle size={13} />查看验证运行</button></div>}
               </div>}
             </article>})}</div>
             {diagnosis.limitations.length > 0 && <div className="diagnosis-limitations"><Info size={16} /><div><strong>证据边界</strong>{diagnosis.limitations.map((limitation) => <p key={limitation}>{limitation}</p>)}</div></div>}

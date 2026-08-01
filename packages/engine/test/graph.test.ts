@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyGraphOperations, diffGraph, flowTargets, lintGraph, type SkillGraph } from "../src/index.js";
+import { applyGraphOperations, diffGraph, flowTargets, isSkillDocumentPath, lintGraph, type SkillGraph } from "../src/index.js";
 
 const workflow: SkillGraph = {
   schemaVersion: "1.0",
@@ -31,6 +31,30 @@ describe("graph lint", () => {
     const codes = lintGraph(broken).map((issue) => issue.code);
     expect(codes).toContain("missing_target");
     expect(codes).toContain("end_unreachable");
+  });
+
+  it("accepts cross-platform-safe Markdown paths anywhere in the Skill project", () => {
+    expect(isSkillDocumentPath("SKILL.md")).toBe(true);
+    expect(isSkillDocumentPath("workflows/routing-table.md")).toBe(true);
+    expect(isSkillDocumentPath("mdd-controller-rest/references/rest-patterns.md")).toBe(true);
+    expect(isSkillDocumentPath("assets/deliverable-template.md")).toBe(true);
+    expect(isSkillDocumentPath("../outside.md")).toBe(false);
+    expect(isSkillDocumentPath("references//broken.md")).toBe(false);
+    expect(isSkillDocumentPath("CON/readme.md")).toBe(false);
+
+    const nestedDocuments: SkillGraph = {
+      ...workflow,
+      nodes: workflow.nodes.map((node) => node.id === "node.step" ? {
+        ...node,
+        doc: "workflows/routing-table.md",
+        lookup: [{ queryId: "doc.routing", kind: "document.slice", path: "mdd-controller-rest/references/rest-patterns.md", anchor: "REST" }]
+      } : node)
+    };
+    expect(lintGraph(nestedDocuments)).toEqual([]);
+    expect(lintGraph({
+      ...workflow,
+      nodes: workflow.nodes.map((node) => node.id === "node.step" ? { ...node, doc: "../outside.md" } : node)
+    }).map((issue) => issue.code)).toContain("document_path_invalid");
   });
 
   it("does not invent a workflow for content-only skills", () => {

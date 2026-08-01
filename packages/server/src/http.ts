@@ -461,6 +461,22 @@ async function routeApi(
   }
 
   const projectRunsMatch = url.pathname.match(/^\/api\/projects\/(project-[0-9a-f-]{36})\/runs$/i);
+  const runtimeArtifactStorageMatch = url.pathname.match(/^\/api\/projects\/(project-[0-9a-f-]{36})\/runtime-artifacts\/storage$/i);
+  if (runtimeArtifactStorageMatch?.[1] && (request.method === "GET" || request.method === "POST")) {
+    if (!benchmarkRunner) throw new AppError(501, "artifact_storage_unavailable", "当前服务未配置完整的 RuntimeArtifact 引用索引");
+    const workspaceId = request.method === "GET"
+      ? url.searchParams.get("workspaceId")
+      : (await readJson(request) as { workspaceId?: unknown }).workspaceId;
+    if (typeof workspaceId !== "string") throw new AppError(400, "workspace_required", "RuntimeArtifact 存储检查需要 workspaceId");
+    const benchmarkRuns = await benchmarkRunner.list(runtimeArtifactStorageMatch[1]);
+    const benchmarkArtifactIds = benchmarkRuns.flatMap((run) =>
+      typeof run.fingerprint.runtimeArtifactId === "string" ? [run.fingerprint.runtimeArtifactId] : []
+    );
+    const data = request.method === "GET"
+      ? await store.getRuntimeArtifactStorage(runtimeArtifactStorageMatch[1], workspaceId, benchmarkArtifactIds, benchmarkRuns.length)
+      : await store.cleanupRuntimeArtifacts(runtimeArtifactStorageMatch[1], workspaceId, benchmarkArtifactIds, benchmarkRuns.length);
+    return sendJson(response, 200, { ok: true, data });
+  }
   if (request.method === "GET" && projectRunsMatch?.[1]) {
     return sendJson(response, 200, { ok: true, data: await store.listRuns(projectRunsMatch[1]) });
   }

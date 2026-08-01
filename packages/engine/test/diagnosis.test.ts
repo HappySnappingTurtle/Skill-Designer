@@ -112,6 +112,7 @@ describe("evidence-driven diagnosis", () => {
   it("attributes a rejected existing target to a recorded false condition and reports missing document context", () => {
     const conditionArtifact = artifact();
     conditionArtifact.graph.nodes.push({ id: "flow.review", kind: "gate", title: "复核", doc: "docs/review.md", docAnchor: "#复核" });
+    conditionArtifact.graph.nodes.push({ id: "flow.reference", kind: "knowledge", title: "参考", doc: "docs/reference.md" });
     conditionArtifact.graph.edges.push({ id: "edge.start-review", from: "flow.start", to: "flow.review", kind: "condition", condition: { op: "boolean", value: false } });
     const conditionRun = runWithReject();
     const identity = conditionRun.events[1]!;
@@ -119,14 +120,27 @@ describe("evidence-driven diagnosis", () => {
       conditionRun.events[0]!, conditionRun.events[1]!,
       { ...identity, seq: 3, type: "condition.evaluated", actor: "system", data: { evaluations: [{ edgeId: "edge.start-review", to: "flow.review", conditionOp: "boolean", result: false }], allowedNodeIds: ["flow.end"] } },
       { ...conditionRun.events[2]!, seq: 4, data: { requestedNodeId: "flow.review", allowedNodeIds: ["flow.end"] } },
-      { ...identity, seq: 5, type: "document.context", actor: "system", nodeId: "flow.review", data: { path: "docs/review.md", anchor: "#复核", status: "missing", contentCharacters: 0, truncated: false } }
+      { ...identity, seq: 5, type: "document.context", actor: "system", nodeId: "flow.review", data: { path: "docs/review.md", anchor: "#复核", status: "missing", contentCharacters: 0, truncated: false } },
+      { ...identity, seq: 6, type: "document.context", actor: "system", nodeId: "flow.reference", data: { path: "docs/reference.md", anchor: null, status: "ambiguous", contentCharacters: 0, truncated: false } }
     ];
-    conditionRun.state.eventSeq = 5;
+    conditionRun.state.eventSeq = 6;
     const report = createBugReportDocument({ reportId: "report-66666666-6666-4666-8666-666666666666", skillName: "诊断 Skill", run: conditionRun, artifact: conditionArtifact, generatedAt: "2026-07-28T01:00:00.000Z", sanitizationMode: "default" });
     const diagnosis = diagnoseBugReport({ diagnosisId: "diagnosis-66666666-6666-4666-8666-666666666666", workspaceId: report.source.workspaceId, reportImportId: "report-import-66666666-6666-4666-8666-666666666666", report, generatedAt: "2026-07-28T01:01:00.000Z" });
-    expect(diagnosis.candidates.map((candidate) => candidate.category)).toEqual(["invalid-transition", "condition-evaluation", "document-context"]);
-    expect(diagnosis.candidates[1]).toMatchObject({ confidence: "high", evidence: [{ seq: 3 }, { seq: 4 }] });
+    expect(diagnosis.candidates.map((candidate) => candidate.category)).toEqual(["invalid-transition", "condition-evaluation", "document-context", "document-context"]);
+    expect(diagnosis.candidates[1]).toMatchObject({
+      confidence: "high",
+      evidence: [{ seq: 3 }, { seq: 4 }],
+      repair: {
+        kind: "graph.remove-condition",
+        operation: {
+          op: "graph.edge.update",
+          target: "edge.start-review",
+          value: { id: "edge.start-review", from: "flow.start", to: "flow.review", kind: "condition" }
+        }
+      }
+    });
     expect(diagnosis.candidates[2]).toMatchObject({ evidence: [{ seq: 5, field: "data.status" }] });
+    expect(diagnosis.candidates[3]).toMatchObject({ candidateId: "candidate-document-6", evidence: [{ seq: 6, field: "data.status" }] });
   });
 });
 

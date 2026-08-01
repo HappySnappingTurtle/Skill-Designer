@@ -1,6 +1,6 @@
-import { AlertTriangle, Ban, Bug, CheckCircle2, CircleStop, FlaskConical, Gauge, GitCompareArrows, History, ListChecks, LoaderCircle, Play, RefreshCw, RotateCcw, Save, ShieldCheck, X } from "lucide-react";
+import { Activity, AlertTriangle, Ban, Bug, CheckCircle2, CircleStop, Coins, Fingerprint, FlaskConical, Gauge, GitCompareArrows, History, ListChecks, LoaderCircle, Play, RefreshCw, RotateCcw, Route, Save, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { BenchmarkCapabilityReport, BenchmarkCaseEntry, BenchmarkHumanVerdict, BenchmarkRunRecord, ModelReasoningEffort, WorkspaceMember } from "@skill-designer/engine";
+import { compareBenchmarkRuns, type BenchmarkCapabilityReport, type BenchmarkCaseEntry, type BenchmarkHumanVerdict, type BenchmarkRunComparison, type BenchmarkRunRecord, type ModelReasoningEffort, type WorkspaceMember } from "@skill-designer/engine";
 import { api } from "../api";
 import { BugReportModal } from "./BugReportModal";
 
@@ -31,6 +31,7 @@ export function BenchmarkRunsView({ workspaceId, skill, onOpenDiagnosis }: Props
 
   const selectedRun = runs.find((run) => run.benchmarkRunId === selectedRunId) ?? runs[0] ?? null;
   const comparisonBase = selectedRun?.lineage ? runs.find((run) => run.benchmarkRunId === selectedRun.lineage!.parentBenchmarkRunId) ?? null : null;
+  const comparison = useMemo(() => selectedRun && comparisonBase ? compareBenchmarkRuns(comparisonBase, selectedRun) : null, [comparisonBase, selectedRun]);
   const readyCases = useMemo(() => cases.filter((item) => item.status === "ready" && item.valid), [cases]);
 
   useEffect(() => {
@@ -207,7 +208,7 @@ export function BenchmarkRunsView({ workspaceId, skill, onOpenDiagnosis }: Props
             <div><span>耗时范围</span><strong>{formatTime(selectedRun.createdAt)} - {formatTime(selectedRun.completedAt ?? selectedRun.updatedAt)}</strong></div>
           </section>
           {selectedRun.failure && <div className={`benchmark-run-failure ${selectedRun.status}`}><Ban size={17} /><div><strong>{failureLabel(selectedRun.failure.category)}</strong><p>{selectedRun.failure.message}</p></div></div>}
-          {selectedRun.lineage && <section className="benchmark-comparison" data-testid="benchmark-comparison"><header><GitCompareArrows size={15} /><strong>关联运行对比</strong></header>{comparisonBase ? <div><span>父运行</span><code>{shortId(comparisonBase.benchmarkRunId)}</code><span>技术状态</span><strong>{benchmarkStatusLabel(comparisonBase.status)} {" -> "} {benchmarkStatusLabel(selectedRun.status)}</strong><span>自动断言</span><strong>{verdictLabel(comparisonBase.automaticVerdict)} {" -> "} {verdictLabel(selectedRun.automaticVerdict)}</strong><span>Artifact</span><strong>{artifactComparison(comparisonBase, selectedRun)}</strong><span>Token</span><strong>{comparisonBase.usage.totalTokens} {" -> "} {selectedRun.usage.totalTokens}</strong></div> : <p>父运行记录未加载，保留关系 ID：{selectedRun.lineage.parentBenchmarkRunId}</p>}</section>}
+          {selectedRun.lineage && (comparisonBase && comparison ? <BenchmarkComparison before={comparisonBase} after={selectedRun} comparison={comparison} /> : <section className="benchmark-comparison" data-testid="benchmark-comparison"><header><GitCompareArrows size={15} /><strong>关联运行深度对比</strong></header><p>父运行记录未加载，保留关系 ID：{selectedRun.lineage.parentBenchmarkRunId}</p></section>)}
           <section className="benchmark-fingerprint"><header><ShieldCheck size={15} /><strong>Runtime Fingerprint</strong></header><dl><dt>Provider / Model</dt><dd>{selectedRun.fingerprint.providerId} · {selectedRun.fingerprint.requestedModel}</dd><dt>Resolved</dt><dd>{selectedRun.fingerprint.resolvedModels.join(", ") || "尚未调用模型"}</dd><dt>Artifact / Revision</dt><dd>{selectedRun.fingerprint.runtimeArtifactId ? `${shortId(selectedRun.fingerprint.runtimeArtifactId)} · ${selectedRun.fingerprint.revision}` : "preflight 前阻断，未冻结"}</dd><dt>Sandbox</dt><dd>{selectedRun.fingerprint.sandboxBackendId} · {selectedRun.sandboxHandleIds.length} handles</dd><dt>Prompt</dt><dd>{selectedRun.fingerprint.promptTemplateVersion} · {selectedRun.fingerprint.reasoningEffort}</dd></dl></section>
           <section className="benchmark-assertions"><header><CheckCircle2 size={15} /><strong>自动断言</strong><span>{selectedRun.assertions.length}</span></header>{selectedRun.assertions.length ? selectedRun.assertions.map((assertion) => <div key={assertion.assertionId} className={assertion.status}><span /> <strong>{assertion.kind}</strong><p>{assertion.message}</p></div>) : <p>运行未完成，不生成自动断言。</p>}</section>
           <section className="benchmark-reviews" data-testid="benchmark-reviews"><header><History size={15} /><strong>人工判定</strong><span>{selectedRun.humanReviews.length}</span></header>
@@ -232,6 +233,48 @@ export function BenchmarkRunsView({ workspaceId, skill, onOpenDiagnosis }: Props
   </div>;
 }
 
+function BenchmarkComparison({ before, after, comparison }: { before: BenchmarkRunRecord; after: BenchmarkRunRecord; comparison: BenchmarkRunComparison }) {
+  return <section className="benchmark-comparison" data-testid="benchmark-comparison">
+    <header><GitCompareArrows size={15} /><strong>关联运行深度对比</strong><span>{comparison.relation === "post-repair" ? "修复前后" : "重跑"}</span></header>
+    <div className="benchmark-comparison-summary">
+      <span>父运行</span><code title={before.benchmarkRunId}>{shortId(before.benchmarkRunId)}</code>
+      <span>技术状态</span><strong>{benchmarkStatusLabel(before.status)} {" -> "} {benchmarkStatusLabel(after.status)}</strong>
+      <span>自动断言</span><strong>{verdictLabel(before.automaticVerdict)} {" -> "} {verdictLabel(after.automaticVerdict)}</strong>
+      <span>人工判定</span><strong>{comparison.latestHumanVerdicts.before ? humanVerdictLabel(comparison.latestHumanVerdicts.before) : "未判定"} {" -> "} {comparison.latestHumanVerdicts.after ? humanVerdictLabel(comparison.latestHumanVerdicts.after) : "未判定"}</strong>
+      <span>Artifact</span><strong>{artifactComparison(before, after)}</strong>
+      <span>模型调用</span><strong>{comparison.modelCalls.before} {" -> "} {comparison.modelCalls.after} <small>{formatDelta(comparison.modelCalls.delta)}</small></strong>
+    </div>
+    <div className="benchmark-comparison-block benchmark-artifact-comparison">
+      <header><Fingerprint size={14} /><strong>Artifact 指纹</strong><span>{comparison.artifact.idChanged && comparison.artifact.revisionChanged && comparison.artifact.contentHashChanged ? "全部变化" : "存在相同字段"}</span></header>
+      <div><span>ID</span><code title={comparison.artifact.beforeId}>{comparison.artifact.beforeId ? shortId(comparison.artifact.beforeId) : "未冻结"}</code><code title={comparison.artifact.afterId}>{comparison.artifact.afterId ? shortId(comparison.artifact.afterId) : "未冻结"}</code></div>
+      <div><span>Revision</span><code title={comparison.artifact.beforeRevision}>{comparison.artifact.beforeRevision ?? "未记录"}</code><code title={comparison.artifact.afterRevision}>{comparison.artifact.afterRevision ?? "未记录"}</code></div>
+      <div><span>Content hash</span><code title={comparison.artifact.beforeContentHash}>{comparison.artifact.beforeContentHash ? shortId(comparison.artifact.beforeContentHash) : "未记录"}</code><code title={comparison.artifact.afterContentHash}>{comparison.artifact.afterContentHash ? shortId(comparison.artifact.afterContentHash) : "未记录"}</code></div>
+    </div>
+    <div className="benchmark-comparison-block benchmark-path-comparison">
+      <header><Route size={14} /><strong>实际节点路径</strong><span>{comparison.path.firstDivergence ? `首个偏差 · 第 ${comparison.path.firstDivergence.index + 1} 个节点` : "路径一致"}</span></header>
+      <div><span>修复前</span><code>{comparison.path.beforeNodeIds.join(" -> ") || "未进入节点"}</code></div>
+      <div><span>修复后</span><code>{comparison.path.afterNodeIds.join(" -> ") || "未进入节点"}</code></div>
+      {comparison.path.firstDivergence && <small>偏差：{comparison.path.firstDivergence.beforeNodeId ?? "路径结束"} {" -> "} {comparison.path.firstDivergence.afterNodeId ?? "路径结束"}；共同前缀 {comparison.path.sharedPrefixNodeIds.length} 个节点。</small>}
+    </div>
+    <div className="benchmark-comparison-block benchmark-assertion-comparison">
+      <header><ListChecks size={14} /><strong>逐条断言</strong><span>{comparison.assertions.filter((item) => item.change !== "unchanged").length} 条变化</span></header>
+      <div className="comparison-table-heading"><span>断言</span><span>修复前</span><span>修复后</span><span>变化</span></div>
+      {comparison.assertions.length ? comparison.assertions.map((item) => <div key={item.assertionId} className={item.change}><code title={item.assertionId}>{item.assertionId}</code><strong className={item.beforeStatus ?? "missing"}>{assertionStatusLabel(item.beforeStatus)}</strong><strong className={item.afterStatus ?? "missing"}>{assertionStatusLabel(item.afterStatus)}</strong><span>{assertionChangeLabel(item.change)}</span></div>) : <p>两次运行都没有生成自动断言。</p>}
+    </div>
+    <div className="benchmark-comparison-split">
+      <div className="benchmark-comparison-block benchmark-usage-comparison">
+        <header><Coins size={14} /><strong>Token 用量</strong><span>实际 usage</span></header>
+        {comparison.usage.map((item) => <div key={item.metric}><span>{usageMetricLabel(item.metric)}</span><strong>{item.before}</strong><strong>{item.after}</strong><small>{formatDelta(item.delta)}</small></div>)}
+      </div>
+      <div className="benchmark-comparison-block benchmark-event-comparison">
+        <header><Activity size={14} /><strong>Trace 事件计数</strong><span>{comparison.trace.beforeEventCount} {" -> "} {comparison.trace.afterEventCount}</span></header>
+        {comparison.trace.eventTypes.map((item) => <div key={item.type} className={item.delta === 0 ? "unchanged" : "changed"}><code>{item.type}</code><strong>{item.beforeCount}</strong><strong>{item.afterCount}</strong><small>{formatDelta(item.delta)}</small></div>)}
+      </div>
+    </div>
+    <p className="benchmark-comparison-boundary">这里只比较两次持久化运行的事实；差异本身不等于根因或修复成功，最终验证仍使用自动断言、人工判定和修复 lineage。</p>
+  </section>;
+}
+
 function benchmarkStatusLabel(status: BenchmarkRunRecord["status"]): string { return { queued: "排队中", preparing: "前置检查", running: "运行中", completed: "已完成", failed: "技术失败", cancelled: "已取消", blocked: "条件阻断" }[status]; }
 function verdictLabel(value: BenchmarkRunRecord["automaticVerdict"]): string { return { passed: "通过", failed: "失败", inconclusive: "无法判定", "not-run": "未运行" }[value]; }
 function humanVerdictLabel(value: BenchmarkHumanVerdict): string { return { passed: "成功", failed: "失败", inconclusive: "待定" }[value]; }
@@ -253,3 +296,7 @@ function artifactComparison(base: BenchmarkRunRecord, current: BenchmarkRunRecor
   if (!before || !after) return "仅一次运行冻结了 Artifact";
   return before === after ? "相同（异常）" : `不同 · ${shortId(before)} -> ${shortId(after)}`;
 }
+function assertionStatusLabel(value: BenchmarkRunRecord["assertions"][number]["status"] | null): string { return value ? { pass: "通过", fail: "失败", inconclusive: "待定" }[value] : "无"; }
+function assertionChangeLabel(value: BenchmarkRunComparison["assertions"][number]["change"]): string { return { unchanged: "未变化", changed: "结果变化", added: "新增", removed: "移除" }[value]; }
+function usageMetricLabel(value: BenchmarkRunComparison["usage"][number]["metric"]): string { return { inputTokens: "输入", outputTokens: "输出", totalTokens: "总量", cachedInputTokens: "缓存输入", reasoningTokens: "推理", cacheWriteTokens: "缓存写入" }[value]; }
+function formatDelta(value: number): string { return value === 0 ? "0" : value > 0 ? `+${value}` : String(value); }

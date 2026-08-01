@@ -657,7 +657,7 @@ export interface ImportFrontmatterSummary {
 }
 
 export type ImportReferenceKind = "markdown-link" | "markdown-image" | "markdown-definition" | "inline-code" | "frontmatter";
-export type ImportReferenceStatus = "resolved" | "missing" | "missing-anchor" | "external" | "invalid" | "escaped";
+export type ImportReferenceStatus = "resolved" | "candidate" | "missing" | "missing-anchor" | "external" | "invalid" | "escaped";
 
 export interface ImportReference {
   referenceId: string;
@@ -744,7 +744,7 @@ export interface ImportReparseConflict {
   parsed: SkillImportReviewSnapshot;
 }
 
-export type ImportParserVersion = "static-v1" | "llm-v1";
+export type ImportParserVersion = "static-v1" | "static-v2" | "llm-v1";
 
 export interface SkillImportParseReview extends SkillImportReviewSnapshot {
   parserVersion: ImportParserVersion;
@@ -969,6 +969,40 @@ export interface RuntimeArtifactFingerprint {
   projectContentHash: string;
   inputHash: string;
   value: string;
+}
+
+export interface RuntimeArtifactRetentionPolicy {
+  schemaVersion: "1.0";
+  cleanupMode: "explicit";
+  orphanGracePeriodMs: number;
+}
+
+export interface RuntimeArtifactStorageStatus {
+  schemaVersion: "1.0";
+  workspaceId: string;
+  projectId: string;
+  skillId: string;
+  scannedAt: string;
+  cutoffAt: string;
+  policy: RuntimeArtifactRetentionPolicy;
+  totalCount: number;
+  totalBytes: number;
+  protectedCount: number;
+  orphanedCount: number;
+  eligibleCount: number;
+  eligibleBytes: number;
+  invalidCount: number;
+  missingReferencedCount: number;
+  runtimeRunCount: number;
+  benchmarkRunCount: number;
+}
+
+export interface RuntimeArtifactCleanupResult {
+  schemaVersion: "1.0";
+  before: RuntimeArtifactStorageStatus;
+  after: RuntimeArtifactStorageStatus;
+  deletedArtifactIds: string[];
+  deletedBytes: number;
 }
 
 export interface ExecutionTraceEvent {
@@ -1688,6 +1722,51 @@ export interface BenchmarkRunRecord {
   failure?: { category: BenchmarkFailureCategory; message: string };
 }
 
+export type BenchmarkAssertionComparisonChange = "unchanged" | "changed" | "added" | "removed";
+
+export interface BenchmarkAssertionComparison {
+  assertionId: string;
+  kind: BenchmarkAssertionResult["kind"];
+  change: BenchmarkAssertionComparisonChange;
+  beforeStatus: BenchmarkAssertionResult["status"] | null;
+  afterStatus: BenchmarkAssertionResult["status"] | null;
+  beforeMessage?: string;
+  afterMessage?: string;
+}
+
+export interface BenchmarkRunComparison {
+  schemaVersion: "1.0";
+  beforeRunId: string;
+  afterRunId: string;
+  relation: "rerun" | "post-repair" | null;
+  artifact: {
+    beforeId?: string;
+    afterId?: string;
+    beforeRevision?: string;
+    afterRevision?: string;
+    beforeContentHash?: string;
+    afterContentHash?: string;
+    idChanged: boolean;
+    revisionChanged: boolean;
+    contentHashChanged: boolean;
+  };
+  path: {
+    beforeNodeIds: string[];
+    afterNodeIds: string[];
+    sharedPrefixNodeIds: string[];
+    firstDivergence: { index: number; beforeNodeId: string | null; afterNodeId: string | null } | null;
+  };
+  assertions: BenchmarkAssertionComparison[];
+  trace: {
+    beforeEventCount: number;
+    afterEventCount: number;
+    eventTypes: Array<{ type: string; beforeCount: number; afterCount: number; delta: number }>;
+  };
+  usage: Array<{ metric: keyof ModelUsage; before: number; after: number; delta: number }>;
+  modelCalls: { before: number; after: number; delta: number };
+  latestHumanVerdicts: { before: BenchmarkHumanVerdict | null; after: BenchmarkHumanVerdict | null };
+}
+
 export type BenchmarkHumanVerdict = "passed" | "failed" | "inconclusive";
 
 export interface BenchmarkHumanReview {
@@ -1751,11 +1830,19 @@ export interface DiagnosisEvidence {
   field?: string;
 }
 
-export interface DiagnosisRepairOption {
+export type DiagnosisRepairOption = {
   kind: "graph.add-edge";
   title: string;
   operation: GraphEdgeCreateOperation;
-}
+} | {
+  kind: "graph.remove-condition";
+  title: string;
+  operation: GraphEdgeUpdateOperation;
+} | {
+  kind: "graph.remove-document-binding";
+  title: string;
+  operation: GraphNodeUpdateOperation;
+};
 
 export interface DiagnosisCandidate {
   candidateId: string;
@@ -1802,6 +1889,13 @@ export interface DiagnosisRepairRecord {
   changeSetId: string;
   proposalStatus: ChangeSetStatus;
   status: DiagnosisRepairStatus;
+  round: number;
+  lineage?: {
+    relation: "follow-up";
+    parentRepairId: string;
+    parentReportImportId: string;
+    sourceVerificationRunId: string;
+  };
   createdAt: string;
   updatedAt: string;
   appliedRevision?: string;

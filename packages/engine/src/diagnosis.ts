@@ -60,7 +60,8 @@ export function diagnoseBugReport(input: {
           { source: "trace", seq: conditionEvidence.seq, nodeId: symptom.nodeId, field: "data.evaluations", fact: `边 ${conditionEvidence.edgeId} -> ${symptom.requestedNodeId} 的 ${conditionEvidence.conditionOp} 条件结果为 false` },
           { source: "trace", seq: symptom.seq, nodeId: symptom.nodeId, field: "type", fact: "随后事件类型为 engine.reject" }
         ],
-        suggestions: ["核对本次 RuntimeArtifact 的初始变量和条件表达式是否符合业务预期。", "需要改变条件或测试输入时分别生成明确 ChangeSet，并使用新 Artifact 运行验证。"]
+        suggestions: ["核对本次 RuntimeArtifact 的初始变量和条件表达式是否符合业务预期。", "只有业务确认该出口不应受当前条件限制时，才确认移除条件的 ChangeSet；也可以改测试输入而不修改 Skill。"],
+        ...conditionRepairOption(input.report, conditionEvidence.edgeId, symptom.nodeId, symptom.requestedNodeId)
       }));
     } else if (symptom.code === "run_stopped") {
       candidates.push(withVerification({
@@ -149,15 +150,25 @@ function rejectedConditionEvidence(report: BugReportDocument, symptomSeq: number
 function appendDocumentCandidates(report: BugReportDocument, candidates: DiagnosisCandidate[]): void {
   const failures = report.trace.filter((event) => event.type === "document.context" && (event.data.status === "missing" || event.data.status === "ambiguous"));
   if (!failures.length) return;
-  candidates.push(withVerification({
-    candidateId: `candidate-document-${failures[0]!.seq}`,
-    category: "document-context",
-    title: "运行节点的文档上下文不可用",
-    statement: "Trace 记录了节点绑定文档缺失或标题切片不唯一。工具可以确认本次运行没有得到明确文档上下文，但不能据此断言文档内容本身错误。",
-    confidence: "high",
-    evidence: failures.map((event) => ({ source: "trace", seq: event.seq, nodeId: event.nodeId, field: "data.status", fact: `${String(event.data.path ?? "未记录路径")} · ${String(event.data.anchor ?? "整篇")} · ${String(event.data.status)}` })),
-    suggestions: ["在冻结 revision 中检查文档路径与完整标题路径是否存在且唯一。", "通过文档或节点绑定 ChangeSet 修正后，创建新 RuntimeArtifact 重新运行。"]
-  }));
+  const groups = new Map<string, typeof failures>();
+  for (const event of failures) {
+    const key = `${event.nodeId ?? ""}:${String(event.data.path ?? "")}:${String(event.data.anchor ?? "")}`;
+    const group = groups.get(key) ?? [];
+    group.push(event);
+    groups.set(key, group);
+  }
+  for (const group of groups.values()) {
+    const first = group[0]!;
+    candidates.push(withVerification({
+      candidateId: `candidate-document-${first.seq}`,
+      category: "document-context",
+      title: "运行节点的文档上下文不可用",
+      statement: "Trace 记录了节点绑定文档缺失或标题切片不唯一。工具可以确认本次运行没有得到明确文档上下文，但不能据此断言文档内容本身错误。",
+      confidence: "high",
+      evidence: group.map((event) => ({ source: "trace", seq: event.seq, nodeId: event.nodeId, field: "data.status", fact: `${String(event.data.path ?? "未记录路径")} · ${String(event.data.anchor ?? "整篇")} · ${String(event.data.status)}` })),
+      suggestions: ["在冻结 revision 中检查文档路径与完整标题路径是否存在且唯一。", "如果当前项目仍存在同一无效绑定，可生成移除绑定的节点 ChangeSet；需要保留上下文时应由用户修正文档或锚点。", "确认修改后创建新 RuntimeArtifact 重新运行。"]
+    }));
+  }
 }
 
 function appendObservedFailureCandidates(report: BugReportDocument, candidates: DiagnosisCandidate[]): void {
@@ -265,6 +276,31 @@ function repairOption(
         op: "graph.edge.create",
         target: edgeId,
         value: { id: edgeId, from, to: requestedNodeId, kind: targetWasVisited ? "back" : "flow" }
+      }
+    }
+  };
+}
+
+function conditionRepairOption(
+  report: BugReportDocument,
+  edgeId: string,
+  from: string,
+  requestedNodeId?: string
+): Pick<DiagnosisCandidate, "repair"> | Record<string, never> {
+  if (!requestedNodeId) return {};
+  const edge = report.graphProjection.edges.find((item) =>
+    item.id === edgeId && item.from === from && item.to === requestedNodeId && item.condition
+  );
+  if (!edge) return {};
+  const { condition: _condition, ...unconditionalEdge } = structuredClone(edge);
+  return {
+    repair: {
+      kind: "graph.remove-condition",
+      title: `移除边 ${edgeId} 的条件限制`,
+      operation: {
+        op: "graph.edge.update",
+        target: edgeId,
+        value: unconditionalEdge
       }
     }
   };

@@ -75,6 +75,7 @@ export function analyzeImportAssets(files: ImportInventoryFile[]): ImportAssetIn
     diagnostics.push({ severity: "warning", code: "frontmatter_unterminated", message: `SKILL.md 的 ${frontmatter.dialect.toUpperCase()} frontmatter 缺少结束分隔符`, path: "SKILL.md" });
   }
   addReferenceDiagnostic(diagnostics, references, "missing", "missing_import_references", "个相对引用找不到目标文件");
+  addReferenceDiagnostic(diagnostics, references, "candidate", "inline_code_reference_candidates", "个代码路径候选未在导入资产中解析；仅供审阅，不视为缺失引用", "info");
   addReferenceDiagnostic(diagnostics, references, "missing-anchor", "missing_import_anchors", "个 Markdown 引用找不到目标锚点");
   addReferenceDiagnostic(diagnostics, references, "escaped", "escaped_import_references", "个引用指向导入目录之外；工具不会读取目录外内容");
   addReferenceDiagnostic(diagnostics, references, "invalid", "invalid_import_references", "个引用不是可解析的项目相对路径");
@@ -277,6 +278,9 @@ function resolveReference(
   const target = canonicalPaths.get(normalized.toLocaleLowerCase("en-US")) ?? normalized;
   const isDirectory = [...filePaths].some((filePath) => filePath.startsWith(`${target.replace(/\/$/u, "")}/`));
   if (!filePaths.has(target) && !isDirectory) {
+    if (kind === "inline-code") {
+      return { sourcePath, startLine, kind, rawTarget, status: "candidate", normalizedTarget: target, ...(fragment ? { fragment } : {}), message: "代码中的路径样文本未在导入资产中解析；仅记录候选" };
+    }
     return { sourcePath, startLine, kind, rawTarget, status: "missing", normalizedTarget: target, ...(fragment ? { fragment } : {}), message: "导入资产中不存在该目标" };
   }
   if (fragment && markdown.has(target)) {
@@ -355,9 +359,9 @@ function maskFrontmatter(markdown: string, frontmatter?: ImportFrontmatterSummar
   return lines.join("\n");
 }
 
-function addReferenceDiagnostic(diagnostics: ImportDiagnostic[], references: ImportReference[], status: ImportReference["status"], code: string, suffix: string): void {
+function addReferenceDiagnostic(diagnostics: ImportDiagnostic[], references: ImportReference[], status: ImportReference["status"], code: string, suffix: string, severity: ImportDiagnostic["severity"] = "warning"): void {
   const count = references.filter((reference) => reference.status === status).length;
-  if (count) diagnostics.push({ severity: "warning", code, message: `发现 ${count} ${suffix}` });
+  if (count) diagnostics.push({ severity, code, message: `发现 ${count} ${suffix}` });
 }
 
 function isStructuredRecord(value: ImportStructuredValue): value is Record<string, ImportStructuredValue> {

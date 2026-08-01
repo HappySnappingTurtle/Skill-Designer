@@ -70,7 +70,7 @@ describe("ImportLLMParserService", () => {
     const result = await service.start(candidate.importId, { workspaceId, reviewRevision: 1 });
 
     expect(result.run).toMatchObject({ status: "failed", diagnostics: [{ code: "llm_parse_evidence_mismatch" }] });
-    expect((await store.getSkillImport(candidate.importId)).parseReview).toMatchObject({ reviewRevision: 1, parserVersion: "static-v1" });
+    expect((await store.getSkillImport(candidate.importId)).parseReview).toMatchObject({ reviewRevision: 1, parserVersion: "static-v2" });
   });
 
   it("feeds lint errors back once and applies only the corrected graph", async () => {

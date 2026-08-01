@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleStop,
+  Database,
   FlaskConical,
   Fingerprint,
   GitCompareArrows,
@@ -19,6 +20,7 @@ import {
   ShieldCheck,
   ShieldAlert,
   Square,
+  Trash2,
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -30,6 +32,8 @@ import {
   type ProjectRunView,
   type ProjectFactQueryResult,
   type RuntimeDialogSession,
+  type RuntimeArtifactCleanupResult,
+  type RuntimeArtifactStorageStatus,
   type RuntimeTraceEvent,
   type SandboxCapabilityReport,
   type SandboxSelfTestRecord,
@@ -59,6 +63,11 @@ export function TestView(props: TestViewProps) {
   const [sandboxSelfTest, setSandboxSelfTest] = useState<SandboxSelfTestRecord | null>(null);
   const [sandboxBusy, setSandboxBusy] = useState(false);
   const [sandboxError, setSandboxError] = useState<string | null>(null);
+  const [artifactStorageOpen, setArtifactStorageOpen] = useState(false);
+  const [artifactStorage, setArtifactStorage] = useState<RuntimeArtifactStorageStatus | null>(null);
+  const [artifactCleanup, setArtifactCleanup] = useState<RuntimeArtifactCleanupResult | null>(null);
+  const [artifactStorageBusy, setArtifactStorageBusy] = useState(false);
+  const [artifactStorageError, setArtifactStorageError] = useState<string | null>(null);
   useEffect(() => setMode("runs"), [props.skill.projectId]);
 
   async function loadSandboxCapabilities() {
@@ -94,6 +103,38 @@ export function TestView(props: TestViewProps) {
     void loadSandboxCapabilities();
   }
 
+  async function loadArtifactStorage() {
+    setArtifactStorageBusy(true);
+    setArtifactStorageError(null);
+    try {
+      setArtifactStorage(await api.getRuntimeArtifactStorage(props.skill.projectId, props.workspaceId));
+    } catch (cause) {
+      setArtifactStorageError(messageOf(cause));
+    } finally {
+      setArtifactStorageBusy(false);
+    }
+  }
+
+  function openArtifactStorage() {
+    setArtifactStorageOpen(true);
+    setArtifactCleanup(null);
+    void loadArtifactStorage();
+  }
+
+  async function cleanupArtifacts() {
+    setArtifactStorageBusy(true);
+    setArtifactStorageError(null);
+    try {
+      const result = await api.cleanupRuntimeArtifacts(props.skill.projectId, props.workspaceId);
+      setArtifactCleanup(result);
+      setArtifactStorage(result.after);
+    } catch (cause) {
+      setArtifactStorageError(messageOf(cause));
+    } finally {
+      setArtifactStorageBusy(false);
+    }
+  }
+
   return <div className="test-workbench">
     <div className="test-mode-bar">
       <div className="test-skill-context"><span>{props.skill.displayName}</span><SkillId value={props.skill.skillId} className="test-skill-id" /></div>
@@ -102,6 +143,7 @@ export function TestView(props: TestViewProps) {
         <button className={mode === "runs" ? "selected" : ""} onClick={() => setMode("runs")}>手动运行</button>
         <button className={mode === "benchmark" ? "selected" : ""} title="真实 Benchmark" onClick={() => setMode("benchmark")}>真实测试</button>
       </div>
+      <button className="icon-button artifact-storage-button" title="管理 RuntimeArtifact 存储" aria-label="管理 RuntimeArtifact 存储" onClick={openArtifactStorage}><Database size={17} /></button>
       <button className={`icon-button sandbox-capability-button ${sandboxCapability?.readyForBenchmark ? "ready" : ""}`} title="查看沙箱能力" aria-label="查看沙箱能力" onClick={openSandboxCapabilities}><ShieldCheck size={17} /></button>
     </div>
     {mode === "cases" ? <BenchmarkCasesView {...props} /> : mode === "benchmark" ? <BenchmarkRunsView {...props} /> : <RuntimeView {...props} />}
@@ -131,6 +173,27 @@ export function TestView(props: TestViewProps) {
         </article>)}</section>
       </div>}
       <div className="modal-actions"><button className="button secondary" onClick={() => setSandboxOpen(false)}>关闭</button><button className="button secondary" disabled={sandboxBusy} onClick={() => void loadSandboxCapabilities()}><RefreshCw size={16} />重新检测</button><button className="button primary" data-testid="run-sandbox-self-test" disabled={sandboxBusy} onClick={() => void runSandboxSelfTest()}>{sandboxBusy ? <LoaderCircle size={16} className="spin" /> : <ShieldCheck size={16} />}运行隔离自检</button></div>
+    </div></div>}
+    {artifactStorageOpen && <div className="modal-backdrop" role="presentation"><div className="modal artifact-storage-modal" role="dialog" aria-modal="true" aria-labelledby="artifact-storage-title">
+      <div className="modal-header"><div><h2 id="artifact-storage-title">RuntimeArtifact 存储</h2><span>当前 Skill 的不可变运行输入</span></div><button className="icon-button subtle" title="关闭" disabled={artifactStorageBusy} onClick={() => setArtifactStorageOpen(false)}><X size={18} /></button></div>
+      <div className="artifact-storage-body">
+        {artifactStorageBusy && !artifactStorage ? <div className="artifact-storage-loading"><LoaderCircle size={18} className="spin" />检查普通运行与 Benchmark 引用</div> : artifactStorageError ? <div className="artifact-storage-error" role="alert"><AlertTriangle size={17} />{artifactStorageError}</div> : artifactStorage && <>
+          <section className="artifact-storage-summary" aria-label="RuntimeArtifact 存储摘要">
+            <div><span>全部</span><strong>{artifactStorage.totalCount}</strong><small>{formatBytes(artifactStorage.totalBytes)}</small></div>
+            <div><span>受保护</span><strong>{artifactStorage.protectedCount}</strong><small>{artifactStorage.runtimeRunCount} 普通运行 · {artifactStorage.benchmarkRunCount} Benchmark</small></div>
+            <div><span>孤立</span><strong>{artifactStorage.orphanedCount}</strong><small>没有结构化运行引用</small></div>
+            <div className={artifactStorage.eligibleCount ? "eligible" : ""}><span>可清理</span><strong>{artifactStorage.eligibleCount}</strong><small>{formatBytes(artifactStorage.eligibleBytes)}</small></div>
+          </section>
+          <section className="artifact-storage-policy">
+            <Database size={18} />
+            <div><strong>显式清理 · 7 天宽限期</strong><p>只删除没有普通运行或 Benchmark 引用、且早于 {formatTime(artifactStorage.cutoffAt)} 的有效 Artifact。被引用、损坏或身份不一致的文件不会删除。</p></div>
+          </section>
+          {(artifactStorage.invalidCount > 0 || artifactStorage.missingReferencedCount > 0) && <section className="artifact-storage-warning" role="alert"><AlertTriangle size={17} /><div><strong>存储完整性需要检查</strong><span>{artifactStorage.invalidCount} 个无效文件 · {artifactStorage.missingReferencedCount} 个引用缺少 Artifact</span></div></section>}
+          {artifactCleanup && <section className="artifact-cleanup-result" aria-label="RuntimeArtifact 清理结果"><ShieldCheck size={17} /><div><strong>已清理 {artifactCleanup.deletedArtifactIds.length} 个孤立 Artifact</strong><span>释放 {formatBytes(artifactCleanup.deletedBytes)}，所有运行引用保持可读。</span></div></section>}
+          <small className="artifact-storage-scan-time">检查时间 {formatTime(artifactStorage.scannedAt)}</small>
+        </>}
+      </div>
+      <div className="modal-actions"><button className="button secondary" onClick={() => setArtifactStorageOpen(false)}>关闭</button><button className="button secondary" disabled={artifactStorageBusy} onClick={() => void loadArtifactStorage()}><RefreshCw size={16} className={artifactStorageBusy ? "spin" : ""} />重新检查</button><button className="button danger" disabled={artifactStorageBusy || !artifactStorage?.eligibleCount} onClick={() => void cleanupArtifacts()}>{artifactStorageBusy ? <LoaderCircle size={16} className="spin" /> : <Trash2 size={16} />}{artifactStorage?.eligibleCount ? `清理 ${artifactStorage.eligibleCount} 个` : "没有可清理项"}</button></div>
     </div></div>}
   </div>;
 }
@@ -747,6 +810,7 @@ export function TraceGraph({ graph, projection, comparisonMissingNodeIds = [] }:
         largeGraph={projectedGraph.nodes.length > 200}
         embeddedControls={false}
         fitPadding={24}
+        fitDistanceScale={0.72}
         onSelectNode={() => undefined}
         onSelectEdge={() => undefined}
         onClearSelection={() => undefined}
@@ -806,4 +870,10 @@ function formatTime(value: string): string {
 function messageOf(cause: unknown): string {
   if (cause instanceof ApiError || cause instanceof Error) return cause.message;
   return "运行操作失败";
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }

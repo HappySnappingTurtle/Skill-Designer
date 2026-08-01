@@ -315,6 +315,12 @@ export const api = {
     return { blob: await response.blob(), fileName };
   },
   listRuns: (projectId: string) => request<ProjectRun[]>(`/api/projects/${projectId}/runs`),
+  getRuntimeArtifactStorage: (projectId: string, workspaceId: string) =>
+    request<import("@skill-designer/engine").RuntimeArtifactStorageStatus>(`/api/projects/${projectId}/runtime-artifacts/storage?workspaceId=${encodeURIComponent(workspaceId)}`),
+  cleanupRuntimeArtifacts: (projectId: string, workspaceId: string) =>
+    request<import("@skill-designer/engine").RuntimeArtifactCleanupResult>(`/api/projects/${projectId}/runtime-artifacts/storage`, {
+      method: "POST", body: JSON.stringify({ workspaceId })
+    }),
   createRun: (projectId: string, input: { workspaceId: string; initialVariables?: Record<string, unknown> }) =>
     request<ProjectRunView>(`/api/projects/${projectId}/runs`, { method: "POST", body: JSON.stringify(input) }),
   getRun: (projectId: string, runId: string) => request<ProjectRunView>(`/api/projects/${projectId}/runs/${runId}`),

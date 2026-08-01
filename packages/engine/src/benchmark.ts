@@ -4,6 +4,8 @@ import type {
   BenchmarkCase,
   BenchmarkCaseIssue,
   BenchmarkObservedResult,
+  BenchmarkRunComparison,
+  BenchmarkRunRecord,
   BugReportDocument,
   GraphEdge,
   RuntimeTraceEvent,
@@ -156,6 +158,101 @@ export function evaluateBenchmarkAssertions(
       ? "inconclusive"
       : "passed";
   return { verdict, assertions };
+}
+
+export function compareBenchmarkRuns(before: BenchmarkRunRecord, after: BenchmarkRunRecord): BenchmarkRunComparison {
+  const beforePath = benchmarkPath(before);
+  const afterPath = benchmarkPath(after);
+  const sharedPrefixNodeIds: string[] = [];
+  const sharedLength = Math.min(beforePath.length, afterPath.length);
+  let divergenceIndex = sharedLength;
+  for (let index = 0; index < sharedLength; index++) {
+    if (beforePath[index] !== afterPath[index]) {
+      divergenceIndex = index;
+      break;
+    }
+    sharedPrefixNodeIds.push(beforePath[index]!);
+  }
+  const pathsEqual = divergenceIndex === sharedLength && beforePath.length === afterPath.length;
+  const beforeAssertions = new Map(before.assertions.map((assertion) => [assertion.assertionId, assertion]));
+  const afterAssertions = new Map(after.assertions.map((assertion) => [assertion.assertionId, assertion]));
+  const assertions = [...new Set([...beforeAssertions.keys(), ...afterAssertions.keys()])].sort().map((assertionId) => {
+    const left = beforeAssertions.get(assertionId);
+    const right = afterAssertions.get(assertionId);
+    const change = !left ? "added" as const : !right ? "removed" as const : canonicalBenchmarkValue(left) === canonicalBenchmarkValue(right) ? "unchanged" as const : "changed" as const;
+    return {
+      assertionId,
+      kind: (right ?? left)!.kind,
+      change,
+      beforeStatus: left?.status ?? null,
+      afterStatus: right?.status ?? null,
+      ...(left ? { beforeMessage: left.message } : {}),
+      ...(right ? { afterMessage: right.message } : {})
+    };
+  });
+  const beforeCounts = benchmarkEventCounts(before);
+  const afterCounts = benchmarkEventCounts(after);
+  const eventTypes = [...new Set([...Object.keys(beforeCounts), ...Object.keys(afterCounts)])].sort().map((type) => {
+    const beforeCount = beforeCounts[type] ?? 0;
+    const afterCount = afterCounts[type] ?? 0;
+    return { type, beforeCount, afterCount, delta: afterCount - beforeCount };
+  });
+  const usageMetrics = ["inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "reasoningTokens", "cacheWriteTokens"] as const;
+  const lineage = after.lineage?.parentBenchmarkRunId === before.benchmarkRunId ? after.lineage.relation : null;
+  return {
+    schemaVersion: "1.0",
+    beforeRunId: before.benchmarkRunId,
+    afterRunId: after.benchmarkRunId,
+    relation: lineage,
+    artifact: {
+      ...(before.fingerprint.runtimeArtifactId ? { beforeId: before.fingerprint.runtimeArtifactId } : {}),
+      ...(after.fingerprint.runtimeArtifactId ? { afterId: after.fingerprint.runtimeArtifactId } : {}),
+      ...(before.fingerprint.revision ? { beforeRevision: before.fingerprint.revision } : {}),
+      ...(after.fingerprint.revision ? { afterRevision: after.fingerprint.revision } : {}),
+      ...(before.fingerprint.contentHash ? { beforeContentHash: before.fingerprint.contentHash } : {}),
+      ...(after.fingerprint.contentHash ? { afterContentHash: after.fingerprint.contentHash } : {}),
+      idChanged: before.fingerprint.runtimeArtifactId !== after.fingerprint.runtimeArtifactId,
+      revisionChanged: before.fingerprint.revision !== after.fingerprint.revision,
+      contentHashChanged: before.fingerprint.contentHash !== after.fingerprint.contentHash
+    },
+    path: {
+      beforeNodeIds: beforePath,
+      afterNodeIds: afterPath,
+      sharedPrefixNodeIds,
+      firstDivergence: pathsEqual ? null : {
+        index: divergenceIndex,
+        beforeNodeId: beforePath[divergenceIndex] ?? null,
+        afterNodeId: afterPath[divergenceIndex] ?? null
+      }
+    },
+    assertions,
+    trace: { beforeEventCount: before.events.length, afterEventCount: after.events.length, eventTypes },
+    usage: usageMetrics.map((metric) => ({ metric, before: before.usage[metric], after: after.usage[metric], delta: after.usage[metric] - before.usage[metric] })),
+    modelCalls: { before: before.modelCallCount, after: after.modelCallCount, delta: after.modelCallCount - before.modelCallCount },
+    latestHumanVerdicts: { before: before.humanReviews.at(-1)?.verdict ?? null, after: after.humanReviews.at(-1)?.verdict ?? null }
+  };
+}
+
+function benchmarkPath(run: BenchmarkRunRecord): string[] {
+  return [...run.events]
+    .sort((left, right) => left.seq - right.seq)
+    .filter((event) => event.type === "engine.enter" && typeof event.nodeId === "string")
+    .map((event) => event.nodeId!);
+}
+
+function benchmarkEventCounts(run: BenchmarkRunRecord): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const event of run.events) counts[event.type] = (counts[event.type] ?? 0) + 1;
+  return counts;
+}
+
+function canonicalBenchmarkValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalBenchmarkValue).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalBenchmarkValue(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function isSubsequence(expected: readonly string[], actual: readonly string[]): boolean {

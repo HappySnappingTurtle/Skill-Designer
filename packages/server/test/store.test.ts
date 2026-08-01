@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import AdmZip from "adm-zip";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { BenchmarkRunRecord, ProjectFileMutationStep, ProjectTransactionJournal, SkillGraph } from "@skill-designer/engine";
+import type { BenchmarkRunRecord, ProjectFileMutationStep, ProjectTransactionJournal, RuntimeArtifact, SkillGraph } from "@skill-designer/engine";
 import { WorkspaceStore } from "../src/store.js";
 
 let root: string;
@@ -406,6 +406,8 @@ custom-field:
     expect(inspected.skillId).toBe(member.skillId);
     expect(inspected.nodes).toBe(3);
     const cli = path.join(extracted, "engine/skill-engine.mjs");
+    const verified = JSON.parse((await execFileAsync(process.execPath, [cli, "verify"])).stdout) as { valid: boolean; checkedFiles: number };
+    expect(verified).toEqual(expect.objectContaining({ valid: true, checkedFiles: entries.filter((entry) => entry !== "export-manifest.json").length }));
     const stateFile = path.join(root, "generic-cli-state", "run.json");
     const startResult = JSON.parse((await execFileAsync(process.execPath, [cli, "run", "start", "--state", stateFile, "--variables", JSON.stringify({ requestId: "clean-cli" })])).stdout) as {
       status: string; state: { status: string; currentNodeId: string; eventSeq: number }; newEvents: unknown[];
@@ -426,6 +428,7 @@ custom-field:
     expect(completed).toMatchObject({ status: "done", state: { status: "completed", eventSeq: 8 } });
     expect(completed.state.events.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(completed.state.events.at(-1)?.type).toBe("engine.complete");
+    expect(await readFile(path.join(extracted, "engine", "README.md"), "utf8")).toContain("skill-engine.mjs verify");
     expect(await readFile(path.join(extracted, "engine", "README.md"), "utf8")).toContain("run start --state");
     const manifest = JSON.parse(await readFile(path.join(extracted, "export-manifest.json"), "utf8")) as { revisionId: string; contentHash: string };
     expect(manifest.revisionId).toBe(member.activeRevision);
@@ -967,6 +970,48 @@ custom-field:
     });
     expect(acknowledged.changedFiles).toEqual([]);
     expect(acknowledged.activeRevision.revisionId).toBe(applied.activeRevision);
+  });
+
+  it("manages Markdown documents across common Skill directory layouts", async () => {
+    const workspace = await store.createWorkspace({ name: "通用文档目录" });
+    const created = await store.createManagedSkill(workspace.workspaceId, { name: "多目录 Skill", capability: "workflow" });
+    const member = created.members[0]!;
+    let activeRevision = member.activeRevision;
+    const documents = [
+      ["workflows/routing-table.md", "# Routing Table\n"],
+      ["mdd-controller-rest/references/rest-patterns.md", "# REST Patterns\n"],
+      ["assets/deliverable-template.md", "# Deliverable Template\n"]
+    ] as const;
+
+    for (const [documentPath, content] of documents) {
+      const changeSet = await store.createChangeSet(member.projectId, {
+        workspaceId: workspace.workspaceId,
+        baseRevision: activeRevision,
+        reason: `创建 ${documentPath}`,
+        operations: [{ op: "docs.write", target: documentPath, value: content }]
+      });
+      const applied = await store.confirmAndApplyChangeSet(changeSet.changeSetId, {
+        digest: changeSet.digest,
+        baseRevision: changeSet.baseRevision
+      });
+      activeRevision = applied.activeRevision;
+    }
+
+    const listed = await store.listDocuments(member.projectId);
+    expect(listed.map((document) => document.path)).toEqual(expect.arrayContaining(documents.map(([documentPath]) => documentPath)));
+    expect((await store.readDocument(member.projectId, "workflows/routing-table.md")).content).toContain("Routing Table");
+    await expect(store.createChangeSet(member.projectId, {
+      workspaceId: workspace.workspaceId,
+      baseRevision: activeRevision,
+      reason: "拒绝越界路径",
+      operations: [{ op: "docs.write", target: "workflows/../outside.md", value: "# Outside\n" }]
+    })).rejects.toMatchObject({ code: "invalid_document_path" });
+    await expect(store.createChangeSet(member.projectId, {
+      workspaceId: workspace.workspaceId,
+      baseRevision: activeRevision,
+      reason: "拒绝跨平台保留路径",
+      operations: [{ op: "docs.write", target: "CON/readme.md", value: "# Invalid\n" }]
+    })).rejects.toMatchObject({ code: "invalid_document_path" });
   });
 
   it("renames and deletes documents with atomic graph reference synchronization", async () => {
@@ -1703,5 +1748,390 @@ custom-field:
     });
     expect(candidate.case).not.toHaveProperty("source");
     expect(await store.listBenchmarkCases(member.projectId)).toEqual([]);
+  });
+
+  it("removes a proven false edge condition only after confirmation and verifies it with a new run", async () => {
+    const workspace = await store.createWorkspace({ name: "条件修复" });
+    const detail = await store.createManagedSkill(workspace.workspaceId, { name: "条件修复 Skill", capability: "workflow" });
+    const member = detail.members[0]!;
+    const initialGraph = await store.getProjectGraph(member.projectId);
+    const coreEndEdge = initialGraph.graph.edges.find((edge) => edge.from === "flow.core-step" && edge.to === "flow.end")!;
+    const conditionalEdge = {
+      ...structuredClone(coreEndEdge),
+      kind: "condition" as const,
+      condition: { op: "boolean" as const, value: false }
+    };
+    const conditionChange = await store.createChangeSet(member.projectId, {
+      workspaceId: workspace.workspaceId,
+      baseRevision: initialGraph.activeRevision,
+      reason: "构造恒 false 条件",
+      operations: [{ op: "graph.edge.update", target: coreEndEdge.id, value: conditionalEdge }]
+    });
+    await store.confirmAndApplyChangeSet(conditionChange.changeSetId, {
+      digest: conditionChange.digest,
+      baseRevision: conditionChange.baseRevision
+    });
+
+    const sourceRun = await store.createRun(member.projectId, { workspaceId: workspace.workspaceId });
+    await store.commandRun(member.projectId, sourceRun.run.runId, "next", { nextNodeId: "flow.core-step" });
+    const conditionContext = await store.getRuntimeDebugContext(member.projectId, sourceRun.run.runId);
+    await store.appendRuntimeTrace(member.projectId, sourceRun.run.runId, {
+      expectedArtifactId: conditionContext.view.run.artifactId,
+      expectedCurrentNodeId: conditionContext.view.run.state.currentNodeId,
+      expectedEventSeq: conditionContext.view.run.state.eventSeq,
+      events: [{
+        type: "condition.evaluated",
+        actor: "system",
+        data: {
+          evaluations: conditionContext.conditionEvaluations,
+          allowedNodeIds: conditionContext.view.allowedTransitions.map((transition) => transition.to)
+        }
+      }]
+    });
+    const rejected = await store.commandRun(member.projectId, sourceRun.run.runId, "next", { nextNodeId: "flow.end" });
+    expect(rejected.commandResult).toMatchObject({ accepted: false, rejection: { requestedNodeId: "flow.end" } });
+    await store.commandRun(member.projectId, sourceRun.run.runId, "stop");
+    const reportPreview = await store.createBugReport(member.projectId, sourceRun.run.runId, {
+      workspaceId: workspace.workspaceId,
+      sanitizationMode: "default",
+      userNote: "恒 false 条件阻断了合法目标"
+    });
+    const confirmedReport = await store.confirmBugReport(reportPreview.reportId, { digest: reportPreview.digest });
+    const importedReport = await store.importStoredBugReport(workspace.workspaceId, confirmedReport.reportId);
+    const diagnosis = await store.createDiagnosis(workspace.workspaceId, importedReport.reportImportId);
+    const conditionCandidate = diagnosis.candidates.find((candidate) => candidate.category === "condition-evaluation")!;
+    expect(conditionCandidate.repair).toMatchObject({
+      kind: "graph.remove-condition",
+      operation: { op: "graph.edge.update", target: coreEndEdge.id }
+    });
+
+    const proposal = await store.createDiagnosisRepair(
+      workspace.workspaceId,
+      importedReport.reportImportId,
+      diagnosis.diagnosisId,
+      conditionCandidate.candidateId
+    );
+    expect(proposal.repair).toMatchObject({ round: 1, status: "unverified", proposalStatus: "proposed" });
+    expect(proposal.changeSet.operations).toEqual([
+      expect.objectContaining({ op: "graph.edge.update", target: coreEndEdge.id, value: expect.not.objectContaining({ condition: expect.anything() }) })
+    ]);
+    expect((await store.getProjectGraph(member.projectId)).graph.edges.find((edge) => edge.id === coreEndEdge.id)).toHaveProperty("condition");
+
+    const applied = await store.confirmDiagnosisRepair(workspace.workspaceId, importedReport.reportImportId, proposal.repair.repairId, {
+      digest: proposal.changeSet.digest,
+      baseRevision: proposal.changeSet.baseRevision
+    });
+    const verificationRun = await store.createRun(member.projectId, { workspaceId: workspace.workspaceId });
+    await store.commandRun(member.projectId, verificationRun.run.runId, "next", { nextNodeId: "flow.core-step" });
+    await store.commandRun(member.projectId, verificationRun.run.runId, "next", { nextNodeId: "flow.end" });
+    const verified = await store.verifyDiagnosisRepair(workspace.workspaceId, importedReport.reportImportId, applied.repair.repairId, {
+      level: "runtime",
+      runId: verificationRun.run.runId
+    });
+    expect(verified).toMatchObject({
+      status: "verified",
+      round: 1,
+      verification: { level: "runtime", runId: verificationRun.run.runId }
+    });
+    expect((await store.getProjectGraph(member.projectId)).graph.edges.find((edge) => edge.id === coreEndEdge.id)).not.toHaveProperty("condition");
+  });
+
+  it("offers removal only for a document binding that is still invalid and verifies the confirmed node change", async () => {
+    const workspace = await store.createWorkspace({ name: "文档绑定修复" });
+    const detail = await store.createManagedSkill(workspace.workspaceId, { name: "文档绑定修复 Skill", capability: "workflow" });
+    const member = detail.members[0]!;
+    const initial = await store.getProjectGraph(member.projectId);
+    const start = initial.graph.nodes.find((node) => node.id === "flow.start")!;
+    const documentContent = "# 开始说明\n\n运行时必须读取的说明。\n";
+    const documentProposal = await store.createChangeSet(member.projectId, {
+      workspaceId: workspace.workspaceId,
+      baseRevision: initial.activeRevision,
+      reason: "创建节点说明",
+      operations: [{ op: "docs.write", target: "docs/start.md", value: documentContent }]
+    });
+    const documentApplied = await store.confirmAndApplyChangeSet(documentProposal.changeSetId, {
+      digest: documentProposal.digest,
+      baseRevision: documentProposal.baseRevision
+    });
+    const bindingProposal = await store.createChangeSet(member.projectId, {
+      workspaceId: workspace.workspaceId,
+      baseRevision: documentApplied.activeRevision,
+      reason: "绑定开始节点说明",
+      operations: [{ op: "graph.node.update", target: start.id, value: { ...start, doc: "docs/start.md", docAnchor: "#开始说明" } }]
+    });
+    await store.confirmAndApplyChangeSet(bindingProposal.changeSetId, {
+      digest: bindingProposal.digest,
+      baseRevision: bindingProposal.baseRevision
+    });
+
+    const source = JSON.parse(await readFile(path.join(root, "projects", member.projectId, "source.json"), "utf8")) as { root: string };
+    const revision = await store.getRevisionStatus(member.projectId);
+    const snapshotDocument = path.join(root, "projects", member.projectId, "snapshots", revision.activeRevision.snapshotId, "files", "docs", "start.md");
+    const liveDocument = path.join(source.root, "docs", "start.md");
+    const sourceRun = await store.createRun(member.projectId, { workspaceId: workspace.workspaceId });
+    await rm(snapshotDocument, { force: true });
+    await rm(liveDocument, { force: true });
+    const missingContext = await store.getRuntimeDebugContext(member.projectId, sourceRun.run.runId);
+    expect(missingContext.document).toMatchObject({ path: "docs/start.md", anchor: "#开始说明", status: "missing" });
+    await store.appendRuntimeTrace(member.projectId, sourceRun.run.runId, {
+      expectedArtifactId: missingContext.view.run.artifactId,
+      expectedCurrentNodeId: missingContext.view.run.state.currentNodeId,
+      expectedEventSeq: missingContext.view.run.state.eventSeq,
+      events: [{
+        type: "document.context",
+        actor: "system",
+        data: { path: "docs/start.md", anchor: "#开始说明", status: "missing", contentCharacters: 0, truncated: false }
+      }]
+    });
+    await store.commandRun(member.projectId, sourceRun.run.runId, "stop");
+    const preview = await store.createBugReport(member.projectId, sourceRun.run.runId, {
+      workspaceId: workspace.workspaceId,
+      sanitizationMode: "default",
+      userNote: "开始节点文档在冻结运行中缺失"
+    });
+    const report = await store.confirmBugReport(preview.reportId, { digest: preview.digest });
+    const imported = await store.importStoredBugReport(workspace.workspaceId, report.reportId);
+
+    await writeFile(liveDocument, documentContent, "utf8");
+    const recoveredDiagnosis = await store.createDiagnosis(workspace.workspaceId, imported.reportImportId);
+    expect(recoveredDiagnosis.candidates.find((candidate) => candidate.category === "document-context")).not.toHaveProperty("repair");
+
+    await rm(liveDocument, { force: true });
+    const diagnosis = await store.createDiagnosis(workspace.workspaceId, imported.reportImportId);
+    const candidate = diagnosis.candidates.find((item) => item.category === "document-context")!;
+    expect(candidate).toMatchObject({
+      repair: {
+        kind: "graph.remove-document-binding",
+        title: "移除节点 flow.start 的不可用文档绑定",
+        operation: { op: "graph.node.update", target: "flow.start", value: expect.not.objectContaining({ doc: expect.anything(), docAnchor: expect.anything() }) }
+      },
+      evidence: expect.arrayContaining([expect.objectContaining({ source: "graph", nodeId: "flow.start" })])
+    });
+
+    await writeFile(liveDocument, documentContent, "utf8");
+    await expect(store.createDiagnosisRepair(
+      workspace.workspaceId,
+      imported.reportImportId,
+      diagnosis.diagnosisId,
+      candidate.candidateId
+    )).rejects.toMatchObject({ code: "repair_document_binding_changed" });
+    await rm(liveDocument, { force: true });
+
+    const proposal = await store.createDiagnosisRepair(
+      workspace.workspaceId,
+      imported.reportImportId,
+      diagnosis.diagnosisId,
+      candidate.candidateId
+    );
+    expect(proposal.changeSet.operations).toEqual([expect.objectContaining({ op: "graph.node.update", target: "flow.start" })]);
+    expect((await store.getProjectGraph(member.projectId)).graph.nodes.find((node) => node.id === "flow.start")).toMatchObject({ doc: "docs/start.md", docAnchor: "#开始说明" });
+
+    const applied = await store.confirmDiagnosisRepair(workspace.workspaceId, imported.reportImportId, proposal.repair.repairId, {
+      digest: proposal.changeSet.digest,
+      baseRevision: proposal.changeSet.baseRevision
+    });
+
+    const unrelatedFailureRun = await store.createRun(member.projectId, { workspaceId: workspace.workspaceId });
+    await store.commandRun(member.projectId, unrelatedFailureRun.run.runId, "next", { nextNodeId: "flow.core-step" });
+    await store.commandRun(member.projectId, unrelatedFailureRun.run.runId, "next", { nextNodeId: "flow.start" });
+    await store.commandRun(member.projectId, unrelatedFailureRun.run.runId, "stop");
+    await expect(store.verifyDiagnosisRepair(workspace.workspaceId, imported.reportImportId, applied.repair.repairId, {
+      level: "runtime",
+      runId: unrelatedFailureRun.run.runId
+    })).rejects.toMatchObject({ code: "verification_inconclusive" });
+
+    const repeatedFailureRun = await store.createRun(member.projectId, { workspaceId: workspace.workspaceId });
+    const repeatedContext = await store.getRuntimeDebugContext(member.projectId, repeatedFailureRun.run.runId);
+    await store.appendRuntimeTrace(member.projectId, repeatedFailureRun.run.runId, {
+      expectedArtifactId: repeatedContext.view.run.artifactId,
+      expectedCurrentNodeId: repeatedContext.view.run.state.currentNodeId,
+      expectedEventSeq: repeatedContext.view.run.state.eventSeq,
+      events: [{
+        type: "document.context",
+        actor: "system",
+        data: { path: "docs/start.md", anchor: "#开始说明", status: "missing", contentCharacters: 0, truncated: false }
+      }]
+    });
+    await store.commandRun(member.projectId, repeatedFailureRun.run.runId, "stop");
+    const failed = await store.verifyDiagnosisRepair(workspace.workspaceId, imported.reportImportId, applied.repair.repairId, {
+      level: "runtime",
+      runId: repeatedFailureRun.run.runId
+    });
+    expect(failed).toMatchObject({ status: "failed", verification: { evidence: [expect.stringContaining("文档上下文不可用")] } });
+
+    const verificationRun = await store.createRun(member.projectId, { workspaceId: workspace.workspaceId });
+    await store.commandRun(member.projectId, verificationRun.run.runId, "next", { nextNodeId: "flow.core-step" });
+    await store.commandRun(member.projectId, verificationRun.run.runId, "next", { nextNodeId: "flow.end" });
+    const verified = await store.verifyDiagnosisRepair(workspace.workspaceId, imported.reportImportId, applied.repair.repairId, {
+      level: "runtime",
+      runId: verificationRun.run.runId
+    });
+    expect(verified).toMatchObject({
+      status: "verified",
+      verification: {
+        runId: verificationRun.run.runId,
+        evidence: expect.arrayContaining([expect.stringContaining("flow.start"), expect.stringContaining("completed")])
+      }
+    });
+    expect((await store.getProjectGraph(member.projectId)).graph.nodes.find((node) => node.id === "flow.start")).not.toHaveProperty("doc");
+  });
+
+  it("records downstream repair failure and links the next report as a second repair round", async () => {
+    const workspace = await store.createWorkspace({ name: "多轮修复" });
+    const detail = await store.createManagedSkill(workspace.workspaceId, { name: "多轮修复 Skill", capability: "workflow" });
+    const member = detail.members[0]!;
+
+    const sourceRun = await store.createRun(member.projectId, { workspaceId: workspace.workspaceId });
+    await store.commandRun(member.projectId, sourceRun.run.runId, "next", { nextNodeId: "flow.core-step" });
+    await store.commandRun(member.projectId, sourceRun.run.runId, "next", { nextNodeId: "flow.start" });
+    await store.commandRun(member.projectId, sourceRun.run.runId, "stop");
+    const firstPreview = await store.createBugReport(member.projectId, sourceRun.run.runId, {
+      workspaceId: workspace.workspaceId,
+      sanitizationMode: "default",
+      userNote: "第一轮缺少返回开始节点的边"
+    });
+    const firstReport = await store.confirmBugReport(firstPreview.reportId, { digest: firstPreview.digest });
+    const firstImport = await store.importStoredBugReport(workspace.workspaceId, firstReport.reportId);
+    const firstDiagnosis = await store.createDiagnosis(workspace.workspaceId, firstImport.reportImportId);
+    const firstCandidate = firstDiagnosis.candidates.find((candidate) => candidate.category === "invalid-transition" && candidate.repair)!;
+    const firstProposal = await store.createDiagnosisRepair(
+      workspace.workspaceId,
+      firstImport.reportImportId,
+      firstDiagnosis.diagnosisId,
+      firstCandidate.candidateId
+    );
+    expect(firstProposal.repair).toMatchObject({ round: 1 });
+    const firstApplied = await store.confirmDiagnosisRepair(workspace.workspaceId, firstImport.reportImportId, firstProposal.repair.repairId, {
+      digest: firstProposal.changeSet.digest,
+      baseRevision: firstProposal.changeSet.baseRevision
+    });
+
+    const verificationRun = await store.createRun(member.projectId, { workspaceId: workspace.workspaceId });
+    await store.commandRun(member.projectId, verificationRun.run.runId, "next", { nextNodeId: "flow.core-step" });
+    const traversedRepair = await store.commandRun(member.projectId, verificationRun.run.runId, "next", { nextNodeId: "flow.start" });
+    const traversalSeq = traversedRepair.run.events.at(-1)!.seq;
+    const downstreamReject = await store.commandRun(member.projectId, verificationRun.run.runId, "next", { nextNodeId: "flow.end" });
+    const rejectionSeq = downstreamReject.run.events.at(-1)!.seq;
+    await store.commandRun(member.projectId, verificationRun.run.runId, "stop");
+    const failed = await store.verifyDiagnosisRepair(workspace.workspaceId, firstImport.reportImportId, firstApplied.repair.repairId, {
+      level: "runtime",
+      runId: verificationRun.run.runId
+    });
+    expect(failed).toMatchObject({
+      status: "failed",
+      round: 1,
+      verification: {
+        runId: verificationRun.run.runId,
+        evidence: [expect.stringContaining(`seq ${traversalSeq}`), expect.stringContaining(`seq ${rejectionSeq}`)]
+      }
+    });
+
+    const secondPreview = await store.createBugReport(member.projectId, verificationRun.run.runId, {
+      workspaceId: workspace.workspaceId,
+      sanitizationMode: "default",
+      userNote: "第一轮修复边已通过，但后续仍被拒绝"
+    });
+    const secondReport = await store.confirmBugReport(secondPreview.reportId, { digest: secondPreview.digest });
+    const secondImport = await store.importStoredBugReport(workspace.workspaceId, secondReport.reportId);
+    const secondDiagnosis = await store.createDiagnosis(workspace.workspaceId, secondImport.reportImportId);
+    const secondCandidate = secondDiagnosis.candidates.find((candidate) => candidate.category === "invalid-transition" && candidate.repair)!;
+    const secondProposal = await store.createDiagnosisRepair(
+      workspace.workspaceId,
+      secondImport.reportImportId,
+      secondDiagnosis.diagnosisId,
+      secondCandidate.candidateId
+    );
+    expect(secondProposal.repair).toMatchObject({
+      round: 2,
+      lineage: {
+        relation: "follow-up",
+        parentRepairId: firstApplied.repair.repairId,
+        parentReportImportId: firstImport.reportImportId,
+        sourceVerificationRunId: verificationRun.run.runId
+      }
+    });
+  });
+
+  it("cleans only expired orphan RuntimeArtifacts and preserves every structured run reference", async () => {
+    const workspace = await store.createWorkspace({ name: "Artifact 清理" });
+    const detail = await store.createManagedSkill(workspace.workspaceId, { name: "Artifact 清理 Skill", capability: "workflow" });
+    const member = detail.members[0]!;
+    const started = await store.createRun(member.projectId, { workspaceId: workspace.workspaceId });
+    const baseArtifact = started.artifact!;
+    const artifactDir = path.join(root, "projects", member.projectId, "runtime-artifacts");
+    const oldOrphanId = "artifact-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const recentOrphanId = "artifact-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const benchmarkArtifactId = "artifact-cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const identityMismatchId = "artifact-dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const corruptId = "artifact-eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const missingReferencedId = "artifact-ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const writeArtifact = async (artifactId: string, createdAt: string, patch: Partial<RuntimeArtifact> = {}) => {
+      const artifact: RuntimeArtifact = { ...structuredClone(baseArtifact), artifactId, createdAt, ...patch };
+      const content = JSON.stringify(artifact, null, 2) + "\n";
+      const file = path.join(artifactDir, `${artifactId}.json`);
+      await writeFile(file, content, "utf8");
+      return { file, size: Buffer.byteLength(content) };
+    };
+    const oldOrphan = await writeArtifact(oldOrphanId, "2026-07-19T08:00:00.000Z");
+    const recentOrphan = await writeArtifact(recentOrphanId, "2026-07-26T08:00:00.000Z");
+    const benchmarkArtifact = await writeArtifact(benchmarkArtifactId, "2026-07-18T08:00:00.000Z");
+    const identityMismatch = await writeArtifact(identityMismatchId, "2026-07-18T08:00:00.000Z", {
+      workspaceId: "workspace-99999999-9999-4999-8999-999999999999"
+    });
+    const corruptFile = path.join(artifactDir, `${corruptId}.json`);
+    await writeFile(corruptFile, "{", "utf8");
+    const runtimeSize = (await stat(path.join(artifactDir, `${baseArtifact.artifactId}.json`))).size;
+
+    const status = await store.getRuntimeArtifactStorage(
+      member.projectId,
+      workspace.workspaceId,
+      [benchmarkArtifactId, missingReferencedId],
+      1
+    );
+    expect(status).toMatchObject({
+      workspaceId: workspace.workspaceId,
+      projectId: member.projectId,
+      skillId: member.skillId,
+      policy: { cleanupMode: "explicit", orphanGracePeriodMs: 7 * 24 * 60 * 60 * 1000 },
+      totalCount: 4,
+      totalBytes: runtimeSize + oldOrphan.size + recentOrphan.size + benchmarkArtifact.size,
+      protectedCount: 2,
+      orphanedCount: 2,
+      eligibleCount: 1,
+      eligibleBytes: oldOrphan.size,
+      invalidCount: 2,
+      missingReferencedCount: 1,
+      runtimeRunCount: 1,
+      benchmarkRunCount: 1
+    });
+
+    const otherWorkspace = await store.createWorkspace({ name: "无关 Workspace" });
+    await expect(store.getRuntimeArtifactStorage(member.projectId, otherWorkspace.workspaceId, [], 0))
+      .rejects.toMatchObject({ code: "project_not_in_workspace" });
+
+    const cleanup = await store.cleanupRuntimeArtifacts(
+      member.projectId,
+      workspace.workspaceId,
+      [benchmarkArtifactId, missingReferencedId],
+      1
+    );
+    expect(cleanup.deletedArtifactIds).toEqual([oldOrphanId]);
+    expect(cleanup.deletedBytes).toBe(oldOrphan.size);
+    expect(cleanup.after).toMatchObject({
+      totalCount: 3,
+      totalBytes: status.totalBytes - oldOrphan.size,
+      protectedCount: 2,
+      orphanedCount: 1,
+      eligibleCount: 0,
+      eligibleBytes: 0,
+      invalidCount: 2,
+      missingReferencedCount: 1
+    });
+    await expect(readFile(oldOrphan.file)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(recentOrphan.file)).isFile()).toBe(true);
+    expect((await stat(benchmarkArtifact.file)).isFile()).toBe(true);
+    expect((await stat(identityMismatch.file)).isFile()).toBe(true);
+    expect((await stat(corruptFile)).isFile()).toBe(true);
+    expect((await store.getRun(member.projectId, started.run.runId)).artifact?.artifactId).toBe(baseArtifact.artifactId);
   });
 });

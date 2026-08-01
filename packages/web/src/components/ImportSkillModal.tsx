@@ -463,7 +463,8 @@ function ImportLLMParseStatus({ running, run }: { running: boolean; run: ImportL
 
 function ImportInventoryFacts({ candidate }: { candidate: SkillImportCandidate }) {
   const resolvedCount = candidate.references.filter((reference) => reference.status === "resolved").length;
-  const issueCount = candidate.references.filter((reference) => reference.status !== "resolved" && reference.status !== "external").length;
+  const candidateCount = candidate.references.filter((reference) => reference.status === "candidate").length;
+  const issueCount = candidate.references.filter((reference) => !["resolved", "candidate", "external"].includes(reference.status)).length;
   const visibleReferences = candidate.references.slice(0, 200);
   return (
     <section className="import-inventory-facts">
@@ -473,7 +474,7 @@ function ImportInventoryFacts({ candidate }: { candidate: SkillImportCandidate }
       </header>
       <div className="import-fact-summary">
         <div><Braces size={15} /><span>Frontmatter</span><strong>{candidate.frontmatter ? `${candidate.frontmatter.dialect.toUpperCase()} · ${frontmatterStatusLabel(candidate.frontmatter.status)}` : "未发现"}</strong></div>
-        <div><Link2 size={15} /><span>相对引用</span><strong>{resolvedCount} 已解析 · {issueCount} 待检查</strong></div>
+        <div><Link2 size={15} /><span>相对引用</span><strong>{resolvedCount} 已解析 · {candidateCount} 候选 · {issueCount} 待检查</strong></div>
         <div><FileSearch size={15} /><span>Provenance</span><strong>{candidate.provenance.length} 条可追溯判断</strong></div>
       </div>
       <div className="import-fact-grid">
@@ -550,7 +551,7 @@ function frontmatterStatusLabel(status: NonNullable<SkillImportCandidate["frontm
 }
 
 function referenceStatusLabel(status: SkillImportCandidate["references"][number]["status"]): string {
-  return { resolved: "已解析", missing: "缺失", "missing-anchor": "锚点缺失", external: "外部", invalid: "无效", escaped: "越界" }[status];
+  return { resolved: "已解析", candidate: "候选", missing: "缺失", "missing-anchor": "锚点缺失", external: "外部", invalid: "无效", escaped: "越界" }[status];
 }
 
 function referenceKindLabel(kind: SkillImportCandidate["references"][number]["kind"]): string {

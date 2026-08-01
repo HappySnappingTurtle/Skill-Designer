@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createBenchmarkCaseFromRuntime, evaluateBenchmarkAssertions, lintBenchmarkCase } from "../src/benchmark.js";
-import type { BenchmarkCase, RuntimeTraceEvent, SkillGraph } from "../src/types.js";
+import { compareBenchmarkRuns, createBenchmarkCaseFromRuntime, evaluateBenchmarkAssertions, lintBenchmarkCase } from "../src/benchmark.js";
+import type { BenchmarkCase, BenchmarkRunRecord, RuntimeTraceEvent, SkillGraph } from "../src/types.js";
 
 const skillId = "skill-11111111-1111-4111-8111-111111111111";
 const graph: SkillGraph = {
@@ -152,3 +152,123 @@ describe("evaluateBenchmarkAssertions", () => {
     expect(result.assertions.find((assertion) => assertion.kind === "artifact")?.actual).not.toHaveProperty("text");
   });
 });
+
+describe("compareBenchmarkRuns", () => {
+  it("aligns assertion identities and exposes path, Trace, Artifact, review, and token changes", () => {
+    const before = benchmarkRun("benchmark-run-11111111-1111-4111-8111-111111111111", {
+      automaticVerdict: "failed",
+      fingerprint: { runtimeArtifactId: "artifact-11111111-1111-4111-8111-111111111111", revision: "rev-before", contentHash: "sha256:before" },
+      usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100, cachedInputTokens: 10, reasoningTokens: 5, cacheWriteTokens: 0 },
+      modelCallCount: 2,
+      events: [
+        event(1, "engine.enter", "flow.start"),
+        event(2, "engine.enter", "flow.confirm"),
+        event(3, "assertion.result"),
+        event(4, "benchmark.completed")
+      ],
+      assertions: [
+        { assertionId: "path", kind: "path", status: "fail", message: "路径失败", expected: ["flow.start", "flow.end"], actual: ["flow.start", "flow.confirm"] },
+        { assertionId: "terminal", kind: "terminal", status: "pass", message: "终态通过" },
+        { assertionId: "obsolete", kind: "variable", status: "fail", message: "旧断言" }
+      ],
+      humanReviews: [{ reviewId: "review-before", verdict: "failed", note: "需要修复", createdAt: "2026-07-30T00:00:00.000Z" }]
+    });
+    const after = benchmarkRun("benchmark-run-22222222-2222-4222-8222-222222222222", {
+      automaticVerdict: "passed",
+      fingerprint: { runtimeArtifactId: "artifact-22222222-2222-4222-8222-222222222222", revision: "rev-after", contentHash: "sha256:after" },
+      usage: { inputTokens: 72, outputTokens: 18, totalTokens: 90, cachedInputTokens: 30, reasoningTokens: 3, cacheWriteTokens: 4 },
+      modelCallCount: 3,
+      events: [
+        event(1, "engine.enter", "flow.start"),
+        event(2, "engine.enter", "flow.collect"),
+        event(3, "engine.enter", "flow.end"),
+        event(4, "model.response"),
+        event(5, "assertion.result"),
+        event(6, "assertion.result"),
+        event(7, "benchmark.completed")
+      ],
+      assertions: [
+        { assertionId: "path", kind: "path", status: "pass", message: "路径通过", expected: ["flow.start", "flow.end"], actual: ["flow.start", "flow.collect", "flow.end"] },
+        { assertionId: "terminal", kind: "terminal", status: "pass", message: "终态通过" },
+        { assertionId: "new-variable", kind: "variable", status: "pass", message: "新增断言" }
+      ],
+      humanReviews: [{ reviewId: "review-after", verdict: "passed", note: "修复通过", createdAt: "2026-07-30T00:05:00.000Z" }],
+      lineage: {
+        parentBenchmarkRunId: before.benchmarkRunId,
+        relation: "post-repair",
+        repairId: "repair-33333333-3333-4333-8333-333333333333",
+        changeSetId: "changeset-44444444-4444-4444-8444-444444444444",
+        appliedRevision: "rev-after"
+      }
+    });
+
+    const result = compareBenchmarkRuns(before, after);
+
+    expect(result).toMatchObject({
+      relation: "post-repair",
+      artifact: { idChanged: true, revisionChanged: true, contentHashChanged: true },
+      path: {
+        beforeNodeIds: ["flow.start", "flow.confirm"],
+        afterNodeIds: ["flow.start", "flow.collect", "flow.end"],
+        sharedPrefixNodeIds: ["flow.start"],
+        firstDivergence: { index: 1, beforeNodeId: "flow.confirm", afterNodeId: "flow.collect" }
+      },
+      modelCalls: { before: 2, after: 3, delta: 1 },
+      latestHumanVerdicts: { before: "failed", after: "passed" }
+    });
+    expect(result.assertions).toEqual([
+      expect.objectContaining({ assertionId: "new-variable", change: "added", beforeStatus: null, afterStatus: "pass" }),
+      expect.objectContaining({ assertionId: "obsolete", change: "removed", beforeStatus: "fail", afterStatus: null }),
+      expect.objectContaining({ assertionId: "path", change: "changed", beforeStatus: "fail", afterStatus: "pass" }),
+      expect.objectContaining({ assertionId: "terminal", change: "unchanged", beforeStatus: "pass", afterStatus: "pass" })
+    ]);
+    expect(result.trace.eventTypes).toEqual(expect.arrayContaining([
+      { type: "engine.enter", beforeCount: 2, afterCount: 3, delta: 1 },
+      { type: "model.response", beforeCount: 0, afterCount: 1, delta: 1 }
+    ]));
+    expect(result.usage.find((item) => item.metric === "cachedInputTokens")).toEqual({ metric: "cachedInputTokens", before: 10, after: 30, delta: 20 });
+  });
+});
+
+function benchmarkRun(
+  benchmarkRunId: string,
+  overrides: Omit<Partial<BenchmarkRunRecord>, "fingerprint"> & { fingerprint?: Partial<BenchmarkRunRecord["fingerprint"]> }
+): BenchmarkRunRecord {
+  const { fingerprint, ...recordOverrides } = overrides;
+  return {
+    schemaVersion: "1.0",
+    benchmarkRunId,
+    workspaceId: "workspace-11111111-1111-4111-8111-111111111111",
+    projectId: "project-11111111-1111-4111-8111-111111111111",
+    skillId,
+    caseId: "case-22222222-2222-4222-8222-222222222222",
+    status: "completed",
+    automaticVerdict: "passed",
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedInputTokens: 0, reasoningTokens: 0, cacheWriteTokens: 0 },
+    modelCallCount: 0,
+    sandboxHandleIds: [],
+    events: [],
+    assertions: [],
+    humanReviews: [],
+    createdAt: "2026-07-30T00:00:00.000Z",
+    updatedAt: "2026-07-30T00:05:00.000Z",
+    completedAt: "2026-07-30T00:05:00.000Z",
+    ...recordOverrides,
+    fingerprint: {
+      schemaVersion: "1.0",
+      providerId: "test-provider",
+      requestedModel: "test-model",
+      resolvedModels: ["test-model"],
+      reasoningEffort: "low",
+      promptTemplateVersion: "benchmark-v1",
+      runnerImage: "runner@sha256:test",
+      sandboxBackendId: "docker-desktop",
+      sandboxPolicyHash: "sha256:policy",
+      ...fingerprint
+    }
+  };
+}
+
+function event(seq: number, type: BenchmarkRunRecord["events"][number]["type"], nodeId?: string): BenchmarkRunRecord["events"][number] {
+  return { seq, at: `2026-07-30T00:00:0${seq}.000Z`, type, ...(nodeId ? { nodeId } : {}), data: {} };
+}

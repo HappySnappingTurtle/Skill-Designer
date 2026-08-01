@@ -27,6 +27,26 @@ interface MarkdownStep {
   confidence: ImportConfidence;
 }
 
+const WORKFLOW_SECTION_TITLES = new Set([
+  "workflow",
+  "step",
+  "steps",
+  "工作流",
+  "流程",
+  "执行流程",
+  "操作步骤",
+  "步骤",
+  "快速工作流",
+  "快速流程",
+  "快速步骤",
+  "标准工作流",
+  "标准流程",
+  "标准步骤",
+  "默认工作流",
+  "默认流程",
+  "默认步骤"
+]);
+
 export function buildImportParseReview(input: BuildImportParseReviewInput): SkillImportParseReview {
   const snapshot = input.nativeGraph
     ? nativeSnapshot(input.skillId, input.nativeGraph)
@@ -34,7 +54,7 @@ export function buildImportParseReview(input: BuildImportParseReviewInput): Skil
       ? declaredContentSnapshot(input.skillId, input.markdown)
       : markdownSnapshot(input.skillId, input.markdown);
   return {
-    parserVersion: "static-v1",
+    parserVersion: "static-v2",
     reviewRevision: 1,
     sourceDigest: input.sourceDigest,
     manuallyEdited: false,
@@ -177,7 +197,7 @@ function workflowSnapshot(skillId: string, steps: MarkdownStep[], sectionEvidenc
   }));
   const edges: ImportEdgeCandidate[] = allNodes.slice(0, -1).map((node, index) => {
     const next = allNodes[index + 1]!;
-    const edge: GraphEdge = { id: `edge.${node.id.replace(/^flow\./u, "")}-${next.id.replace(/^flow\./u, "")}`, from: node.id, to: next.id, kind: "flow" };
+    const edge: GraphEdge = { id: `edge.flow-${index + 1}`, from: node.id, to: next.id, kind: "flow" };
     return {
       candidateId: `edge:${edge.id}`,
       value: edge,
@@ -206,7 +226,7 @@ function workflowSnapshot(skillId: string, steps: MarkdownStep[], sectionEvidenc
 function findWorkflowSection(lines: string[]): { line: number; level: number; evidence: ImportParseEvidence } | null {
   for (let index = 0; index < lines.length; index += 1) {
     const match = lines[index]!.match(/^(#{1,6})\s+(.+?)\s*$/u);
-    if (!match || !/^(workflow|steps?|工作流|流程|执行流程|操作步骤|步骤)$/iu.test(match[2]!.trim())) continue;
+    if (!match || !WORKFLOW_SECTION_TITLES.has(match[2]!.trim().toLocaleLowerCase("en-US"))) continue;
     return {
       line: index,
       level: match[1]!.length,

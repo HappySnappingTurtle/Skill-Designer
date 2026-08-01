@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, type Dirent } from "node:fs";
 import { copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import archiver from "archiver";
@@ -59,6 +59,7 @@ import {
   type ImportParserVersion,
   type ImportProvenanceRecord,
   importReviewGraph,
+  isSkillDocumentPath,
   createBenchmarkCaseFromReport,
   createBenchmarkCaseFromRuntime,
   createReportFixture as buildReportFixture,
@@ -95,6 +96,8 @@ import {
   type ProjectFactQuery,
   type PreparedBenchmarkExecution,
   type RuntimeArtifact,
+  type RuntimeArtifactCleanupResult,
+  type RuntimeArtifactStorageStatus,
   type RuntimeBenchmarkCandidate,
   type RuntimeEngineEvent,
   type RuntimeTraceEvent,
@@ -188,6 +191,13 @@ function plainRecord(value: unknown): Record<string, unknown> {
 const GRAPH_NODE_KNOWN_FIELDS = new Set(["id", "kind", "title", "description", "doc", "docAnchor", "lookup", "position", "extensions"]);
 const GRAPH_EDGE_KNOWN_FIELDS = new Set(["id", "from", "to", "kind", "label", "condition", "extensions"]);
 const GRAPH_EXTENSION_BYTES = 64 * 1024;
+const RUNTIME_ARTIFACT_ORPHAN_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface RuntimeArtifactStorageScan {
+  status: RuntimeArtifactStorageStatus;
+  eligible: Array<{ artifactId: string; file: string; size: number; createdAt: string }>;
+  protectedArtifactIds: Set<string>;
+}
 
 function preservedGraphFields(item: Record<string, unknown>, knownFields: Set<string>, label: string): Record<string, unknown> {
   const unknownEntries = Object.entries(item).filter(([field]) => !knownFields.has(field));
@@ -460,7 +470,7 @@ export class WorkspaceStore {
       if (node.doc) references.set(node.doc, (references.get(node.doc) ?? 0) + 1);
     }
     const entries: DocumentEntry[] = [];
-    for (const relative of ["SKILL.md", ...(await this.walkMarkdown(path.join(source.root, "docs"), "docs"))]) {
+    for (const relative of await this.walkMarkdown(source.root, "")) {
       const target = this.resolveDocumentPath(source, relative);
       try {
         await this.assertProjectReadPath(source, target);
@@ -526,7 +536,7 @@ export class WorkspaceStore {
     this.assertId(projectId, "project");
     const source = await this.readProjectSource(projectId);
     const graph = await this.readGraph(source);
-    let entries;
+    let entries: Dirent[];
     try {
       entries = await readdir(this.benchmarkCaseDir(source), { withFileTypes: true });
     } catch (error) {
@@ -923,7 +933,7 @@ export class WorkspaceStore {
           reparseConflict: {
             kind: "manual-vs-reparse",
             detectedAt: this.now().toISOString(),
-            parserVersion: "static-v1",
+            parserVersion: parsedReview.parserVersion,
             parsed: this.importReviewSnapshot(parsedReview)
           }
         };
@@ -1470,11 +1480,7 @@ export class WorkspaceStore {
     if (!currentNode) throw new AppError(409, "runtime_current_node_missing", "RuntimeArtifact 中不存在当前节点");
     let document: RuntimeDebugContext["document"] = null;
     if (currentNode.doc) {
-      if (
-        currentNode.doc.includes("\\") || currentNode.doc.startsWith("/") ||
-        currentNode.doc.split("/").some((segment) => !segment || segment === "." || segment === "..") ||
-        !currentNode.doc.endsWith(".md") || (currentNode.doc !== "SKILL.md" && !currentNode.doc.startsWith("docs/"))
-      ) throw new AppError(409, "runtime_document_path_invalid", "冻结节点引用了无效文档路径");
+      if (!isSkillDocumentPath(currentNode.doc)) throw new AppError(409, "runtime_document_path_invalid", "冻结节点引用了无效文档路径");
       const revision = await this.readRevision(projectId, run.revision);
       try {
         const content = await readFile(path.join(this.snapshotFilesDir(projectId, revision.snapshotId), ...currentNode.doc.split("/")), "utf8");
@@ -1894,6 +1900,7 @@ export class WorkspaceStore {
         report: imported.report,
         generatedAt: this.now().toISOString()
       });
+      await this.enrichDocumentDiagnosisRepairs(imported, diagnosis);
       await this.writeDiagnosis(diagnosis);
       return diagnosis;
     });
@@ -1939,6 +1946,9 @@ export class WorkspaceStore {
     if (revision.activeRevision.contentHash !== imported.report.skill.contentHash) {
       throw new AppError(409, "repair_source_changed", "当前 Skill 已与报告内容不同，请重新复现和诊断");
     }
+    if (candidate.repair.kind === "graph.remove-document-binding") {
+      await this.assertDocumentDiagnosisRepairCurrent(imported.match.matchedProjectId, imported, candidate);
+    }
     const changeSet = await this.createChangeSet(imported.match.matchedProjectId, {
       workspaceId,
       baseRevision: revision.activeRevision.revisionId,
@@ -1959,6 +1969,8 @@ export class WorkspaceStore {
       operations: [candidate.repair.operation]
     });
     const timestamp = this.now().toISOString();
+    const sourceRunId = imported.report.source.benchmarkRunId ?? imported.report.source.runId;
+    const parentRepair = await this.findParentDiagnosisRepair(workspaceId, imported.match.matchedProjectId, diagnosis.skillId, sourceRunId);
     const repair: DiagnosisRepairRecord = {
       schemaVersion: "1.0",
       repairId: `repair-${this.idFactory()}`,
@@ -1968,11 +1980,20 @@ export class WorkspaceStore {
       candidateId,
       skillId: diagnosis.skillId,
       projectId: imported.match.matchedProjectId,
-      sourceRunId: imported.report.source.benchmarkRunId ?? imported.report.source.runId,
+      sourceRunId,
       sourceRevision: imported.report.source.revision,
       changeSetId: changeSet.changeSetId,
       proposalStatus: "proposed",
       status: "unverified",
+      round: (parentRepair?.round ?? 0) + 1,
+      ...(parentRepair ? {
+        lineage: {
+          relation: "follow-up",
+          parentRepairId: parentRepair.repairId,
+          parentReportImportId: parentRepair.reportImportId,
+          sourceVerificationRunId: sourceRunId
+        }
+      } : {}),
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -2046,25 +2067,79 @@ export class WorkspaceStore {
     }
     const repair = await this.readDiagnosisRepair(workspaceId, reportImportId, repairId);
     if (!repair.appliedRevision) throw new AppError(409, "repair_not_applied", "修复提案尚未应用，不能验证");
-    const [runView, changeSet] = await Promise.all([
+    const [runView, changeSet, diagnosis] = await Promise.all([
       this.getRun(repair.projectId, record.runId),
-      this.getChangeSet(repair.changeSetId)
+      this.getChangeSet(repair.changeSetId),
+      this.readDiagnosis(workspaceId, reportImportId, repair.diagnosisId)
     ]);
     if (runView.run.skillId !== repair.skillId || runView.run.workspaceId !== workspaceId || runView.run.revision !== repair.appliedRevision) {
       throw new AppError(409, "verification_run_mismatch", "验证运行必须属于该 Skill 并使用修复后的 revision");
     }
-    const operation = changeSet.operations.find((item) => item.op === "graph.edge.create");
-    if (!operation || operation.op !== "graph.edge.create") throw new AppError(500, "repair_operation_missing", "修复记录缺少图边操作");
-    const traversed = runView.run.events.some((event) => event.type === "engine.enter" && event.data.viaEdgeId === operation.target);
-    const repeated = runView.run.events.some((event) => event.type === "engine.reject" && event.nodeId === operation.value.from && event.data.requestedNodeId === operation.value.to);
+    const candidate = diagnosis.candidates.find((item) => item.candidateId === repair.candidateId);
+    const repairKind = candidate?.repair?.kind;
+    const operation = repairKind === "graph.remove-document-binding"
+      ? changeSet.operations.find((item) => item.op === "graph.node.update")
+      : changeSet.operations.find((item) => item.op === "graph.edge.create" || item.op === "graph.edge.update");
+    if (!operation) throw new AppError(500, "repair_operation_missing", "修复记录缺少可验证的图操作");
+
+    if (operation.op === "graph.node.update") {
+      if (!runView.artifact) throw new AppError(409, "verification_artifact_mismatch", "验证运行缺少可读取的 RuntimeArtifact");
+      const artifactNode = runView.artifact.graph.nodes.find((node) => node.id === operation.target);
+      if (!artifactNode || artifactNode.doc || artifactNode.docAnchor) {
+        throw new AppError(409, "verification_artifact_mismatch", "验证运行的 Artifact 未包含移除文档绑定的节点修改");
+      }
+      const traversal = runView.run.events.find((event) => event.type === "engine.enter" && event.nodeId === operation.target);
+      const repeated = traversal ? runView.run.events.find((event) => event.seq >= traversal.seq
+        && event.type === "document.context"
+        && event.nodeId === operation.target
+        && (event.data.status === "missing" || event.data.status === "ambiguous")) : undefined;
+      let status: DiagnosisRepairRecord["status"];
+      let evidence: string[];
+      if (repeated) {
+        status = "failed";
+        evidence = [`新运行在 seq ${repeated.seq} 再次记录节点 ${operation.target} 的文档上下文不可用`];
+      } else if (runView.run.state.status === "completed" && traversal) {
+        status = "verified";
+        evidence = [
+          `新运行使用 revision ${runView.run.revision}`,
+          `RuntimeArtifact 中节点 ${operation.target} 已无文档绑定`,
+          `Trace 在 seq ${traversal.seq} 实际进入节点 ${operation.target}`,
+          "运行到达 completed 终态且未重复出现该节点的文档上下文失败"
+        ];
+      } else {
+        throw new AppError(422, "verification_inconclusive", "该运行没有进入修复节点并完成，不能判定文档绑定修复结果");
+      }
+      const checkedAt = this.now().toISOString();
+      const updated: DiagnosisRepairRecord = {
+        ...repair,
+        status,
+        updatedAt: checkedAt,
+        verification: { level: "runtime", runId: record.runId, checkedAt, evidence }
+      };
+      await this.writeDiagnosisRepair(updated);
+      return updated;
+    }
+    if (operation.op !== "graph.edge.create" && operation.op !== "graph.edge.update") {
+      throw new AppError(500, "repair_operation_missing", "修复记录缺少可验证的图边操作");
+    }
+    const traversal = runView.run.events.find((event) => event.type === "engine.enter" && event.data.viaEdgeId === operation.target);
+    const repeated = runView.run.events.find((event) => event.type === "engine.reject" && event.nodeId === operation.value.from && event.data.requestedNodeId === operation.value.to);
+    const downstreamRejection = traversal ? runView.run.events.find((event) => event.seq > traversal.seq && event.type === "engine.reject") : undefined;
+    const operationLabel = operation.op === "graph.edge.create" ? "新增边" : "更新边";
     let status: DiagnosisRepairRecord["status"];
     let evidence: string[];
     if (repeated) {
       status = "failed";
-      evidence = [`新运行再次拒绝 ${operation.value.from} -> ${operation.value.to}`];
-    } else if (runView.run.state.status === "completed" && traversed) {
+      evidence = [`新运行在 seq ${repeated.seq} 再次拒绝 ${operation.value.from} -> ${operation.value.to}`];
+    } else if (downstreamRejection) {
+      status = "failed";
+      evidence = [
+        `Trace 在 seq ${traversal!.seq} 实际经过${operationLabel} ${operation.target}`,
+        `随后在 seq ${downstreamRejection.seq} 发生拒绝跳转，验证运行未完成`
+      ];
+    } else if (runView.run.state.status === "completed" && traversal) {
       status = "verified";
-      evidence = [`新运行使用 revision ${runView.run.revision}`, `Trace 实际经过新增边 ${operation.target}`, "运行到达 completed 终态"];
+      evidence = [`新运行使用 revision ${runView.run.revision}`, `Trace 实际经过${operationLabel} ${operation.target}`, "运行到达 completed 终态"];
     } else {
       throw new AppError(422, "verification_inconclusive", "该运行没有完整经过修复边并完成，不能判定修复结果");
     }
@@ -2386,6 +2461,62 @@ export class WorkspaceStore {
     }
   }
 
+  async getRuntimeArtifactStorage(
+    projectId: string,
+    workspaceId: string,
+    benchmarkArtifactIds: string[],
+    benchmarkRunCount: number
+  ): Promise<RuntimeArtifactStorageStatus> {
+    this.assertId(projectId, "project");
+    this.assertId(workspaceId, "workspace");
+    return (await this.scanRuntimeArtifactStorage(projectId, workspaceId, benchmarkArtifactIds, benchmarkRunCount)).status;
+  }
+
+  async cleanupRuntimeArtifacts(
+    projectId: string,
+    workspaceId: string,
+    benchmarkArtifactIds: string[],
+    benchmarkRunCount: number
+  ): Promise<RuntimeArtifactCleanupResult> {
+    this.assertId(projectId, "project");
+    this.assertId(workspaceId, "workspace");
+    return this.mutate(async () => {
+      const before = await this.scanRuntimeArtifactStorage(projectId, workspaceId, benchmarkArtifactIds, benchmarkRunCount);
+      const deletedArtifactIds: string[] = [];
+      let deletedBytes = 0;
+      for (const candidate of before.eligible) {
+        if (before.protectedArtifactIds.has(candidate.artifactId)) continue;
+        let parsed: Partial<RuntimeArtifact>;
+        let info;
+        try {
+          info = await lstat(candidate.file);
+          if (!info.isFile() || info.isSymbolicLink()) continue;
+          parsed = JSON.parse(await readFile(candidate.file, "utf8")) as Partial<RuntimeArtifact>;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw error;
+        }
+        if (
+          parsed.schemaVersion !== "1.0" || parsed.artifactId !== candidate.artifactId ||
+          parsed.workspaceId !== workspaceId || parsed.projectId !== projectId || parsed.skillId !== before.status.skillId ||
+          typeof parsed.createdAt !== "string" || parsed.createdAt !== candidate.createdAt ||
+          Date.parse(parsed.createdAt) > Date.parse(before.status.cutoffAt)
+        ) continue;
+        await unlink(candidate.file);
+        deletedArtifactIds.push(candidate.artifactId);
+        deletedBytes += info.size;
+      }
+      const after = await this.scanRuntimeArtifactStorage(projectId, workspaceId, benchmarkArtifactIds, benchmarkRunCount);
+      return {
+        schemaVersion: "1.0",
+        before: before.status,
+        after: after.status,
+        deletedArtifactIds,
+        deletedBytes
+      };
+    });
+  }
+
   async commandRun(
     projectId: string,
     runId: string,
@@ -2465,9 +2596,7 @@ export class WorkspaceStore {
   }
 
   private isRuntimeDocumentPath(documentPath: string): boolean {
-    return !documentPath.includes("\\") && !documentPath.startsWith("/") &&
-      !documentPath.split("/").some((segment) => !segment || segment === "." || segment === "..") &&
-      documentPath.endsWith(".md") && (documentPath === "SKILL.md" || documentPath.startsWith("docs/"));
+    return isSkillDocumentPath(documentPath);
   }
 
   async createChangeSet(projectId: string, input: unknown): Promise<ProjectChangeSet> {
@@ -4057,6 +4186,69 @@ export class WorkspaceStore {
     return issues;
   }
 
+  private async enrichDocumentDiagnosisRepairs(imported: ImportedBugReport, diagnosis: DiagnosisRecord): Promise<void> {
+    const projectId = imported.match.matchedProjectId;
+    if (imported.match.status !== "matched" || !projectId) return;
+    const [revision, source] = await Promise.all([
+      this.getRevisionStatus(projectId),
+      this.readProjectSource(projectId)
+    ]);
+    if (revision.activeRevision.contentHash !== imported.report.skill.contentHash) return;
+    const graph = await this.readGraph(source);
+    const issues = await this.lintDocumentBindings(source, graph);
+
+    for (const candidate of diagnosis.candidates) {
+      if (candidate.category !== "document-context") continue;
+      const seq = candidate.evidence.find((item) => item.source === "trace" && item.seq !== undefined)?.seq;
+      const event = imported.report.trace.find((item) => item.seq === seq && item.type === "document.context");
+      if (!event?.nodeId || typeof event.data.path !== "string") continue;
+      const nodeIndex = graph.nodes.findIndex((node) => node.id === event.nodeId);
+      if (nodeIndex < 0) continue;
+      const node = graph.nodes[nodeIndex]!;
+      const eventAnchor = typeof event.data.anchor === "string" ? event.data.anchor.trim() : "";
+      if (node.doc?.trim() !== event.data.path.trim() || (node.docAnchor?.trim() ?? "") !== eventAnchor) continue;
+      const relevantIssues = issues.filter((issue) => issue.path === `nodes[${nodeIndex}].doc` || issue.path === `nodes[${nodeIndex}].docAnchor`);
+      if (!relevantIssues.length) continue;
+      const { doc: _document, docAnchor: _anchor, ...withoutBinding } = structuredClone(node);
+      candidate.repair = {
+        kind: "graph.remove-document-binding",
+        title: `移除节点 ${node.id} 的不可用文档绑定`,
+        operation: { op: "graph.node.update", target: node.id, value: withoutBinding }
+      };
+      candidate.evidence.push({
+        source: "graph",
+        nodeId: node.id,
+        field: relevantIssues[0]!.path,
+        fact: `当前项目复核仍失败：${relevantIssues.map((issue) => issue.message).join("；")}`
+      });
+    }
+  }
+
+  private async assertDocumentDiagnosisRepairCurrent(
+    projectId: string,
+    imported: ImportedBugReport,
+    candidate: DiagnosisRecord["candidates"][number]
+  ): Promise<void> {
+    if (candidate.repair?.kind !== "graph.remove-document-binding") return;
+    const seq = candidate.evidence.find((item) => item.source === "trace" && item.seq !== undefined)?.seq;
+    const event = imported.report.trace.find((item) => item.seq === seq && item.type === "document.context");
+    const source = await this.readProjectSource(projectId);
+    const graph = await this.readGraph(source);
+    const nodeIndex = graph.nodes.findIndex((node) => node.id === candidate.repair!.operation.target);
+    const node = nodeIndex >= 0 ? graph.nodes[nodeIndex] : undefined;
+    const eventAnchor = typeof event?.data.anchor === "string" ? event.data.anchor.trim() : "";
+    if (!event?.nodeId || event.nodeId !== node?.id || typeof event.data.path !== "string"
+      || node.doc?.trim() !== event.data.path.trim() || (node.docAnchor?.trim() ?? "") !== eventAnchor) {
+      throw new AppError(409, "repair_document_binding_changed", "当前节点文档绑定已与诊断证据不同，请重新运行并分析");
+    }
+    const issues = await this.lintDocumentBindings(source, graph);
+    const remainsInvalid = issues.some((issue) => issue.path === `nodes[${nodeIndex}].doc` || issue.path === `nodes[${nodeIndex}].docAnchor`);
+    const { doc: _document, docAnchor: _anchor, ...withoutBinding } = structuredClone(node);
+    if (!remainsInvalid || JSON.stringify(withoutBinding) !== JSON.stringify(candidate.repair.operation.value)) {
+      throw new AppError(409, "repair_document_binding_changed", "当前节点文档绑定已恢复或发生变化，请重新运行并分析");
+    }
+  }
+
   private rewriteDocumentReferences(graph: SkillGraph, from: string, to: string | null): SkillGraph {
     return {
       ...structuredClone(graph),
@@ -4076,14 +4268,7 @@ export class WorkspaceStore {
   }
 
   private resolveDocumentPath(source: ProjectSource, relativePath: string): string {
-    if (
-      typeof relativePath !== "string" ||
-      relativePath.includes("\\") ||
-      relativePath.startsWith("/") ||
-      relativePath.split("/").some((segment) => !segment || segment === "." || segment === "..") ||
-      !relativePath.endsWith(".md") ||
-      (relativePath !== "SKILL.md" && !relativePath.startsWith("docs/"))
-    ) {
+    if (typeof relativePath !== "string" || !isSkillDocumentPath(relativePath)) {
       throw new AppError(400, "invalid_document_path", "文档路径无效");
     }
     const target = path.resolve(source.root, ...relativePath.split("/"));
@@ -4761,11 +4946,14 @@ export class WorkspaceStore {
       const entries = await readdir(directory, { withFileTypes: true });
       const results: string[] = [];
       for (const entry of entries) {
-        if (entry.name.startsWith(".")) continue;
-        if (entry.isSymbolicLink()) throw new AppError(403, "project_symlink_unsupported", "文档目录不接受符号链接");
-        const childPrefix = `${prefix}/${entry.name}`;
+        if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+        const childPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.isSymbolicLink()) {
+          if (entry.name.toLowerCase().endsWith(".md")) throw new AppError(403, "project_symlink_unsupported", "Markdown 文档不接受符号链接");
+          continue;
+        }
         if (entry.isDirectory()) results.push(...await this.walkMarkdown(path.join(directory, entry.name), childPrefix));
-        else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) results.push(childPrefix);
+        else if (entry.isFile() && isSkillDocumentPath(childPrefix)) results.push(childPrefix);
       }
       return results;
     } catch (error) {
@@ -4887,7 +5075,8 @@ export class WorkspaceStore {
   private async readDiagnosisRepair(workspaceId: string, reportImportId: string, repairId: string): Promise<DiagnosisRepairRecord> {
     this.assertRepairId(repairId);
     try {
-      const repair = JSON.parse(await readFile(path.join(this.diagnosisRepairDir(workspaceId, reportImportId), `${repairId}.json`), "utf8")) as DiagnosisRepairRecord;
+      const parsed = JSON.parse(await readFile(path.join(this.diagnosisRepairDir(workspaceId, reportImportId), `${repairId}.json`), "utf8")) as DiagnosisRepairRecord;
+      const repair = { ...parsed, round: Number.isSafeInteger(parsed.round) && parsed.round > 0 ? parsed.round : 1 };
       if (repair.repairId !== repairId || repair.workspaceId !== workspaceId || repair.reportImportId !== reportImportId) {
         throw new AppError(409, "repair_identity_mismatch", "修复记录身份数据不一致");
       }
@@ -4903,6 +5092,24 @@ export class WorkspaceStore {
   private async writeDiagnosisRepair(repair: DiagnosisRepairRecord): Promise<void> {
     await mkdir(this.diagnosisRepairDir(repair.workspaceId, repair.reportImportId), { recursive: true });
     await this.atomicWrite(path.join(this.diagnosisRepairDir(repair.workspaceId, repair.reportImportId), `${repair.repairId}.json`), JSON.stringify(repair, null, 2) + "\n");
+  }
+
+  private async findParentDiagnosisRepair(
+    workspaceId: string,
+    projectId: string,
+    skillId: string,
+    sourceRunId: string
+  ): Promise<DiagnosisRepairRecord | null> {
+    const reports = await this.listImportedBugReports(workspaceId);
+    const repairs = (await Promise.all(reports.map((report) =>
+      this.listDiagnosisRepairs(workspaceId, report.reportImportId)
+    ))).flat();
+    return repairs
+      .filter((repair) =>
+        repair.projectId === projectId && repair.skillId === skillId &&
+        repair.verification?.runId === sourceRunId
+      )
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null;
   }
 
   private async synchronizeDiagnosisRepair(repair: DiagnosisRepairRecord): Promise<DiagnosisRepairRecord> {
@@ -5027,6 +5234,127 @@ export class WorkspaceStore {
   private async readArtifactForRun(projectId: string, runId: string): Promise<RuntimeArtifact> {
     const run = await this.readRun(projectId, runId);
     return this.readArtifact(projectId, run.artifactId);
+  }
+
+  private async scanRuntimeArtifactStorage(
+    projectId: string,
+    workspaceId: string,
+    benchmarkArtifactIds: string[],
+    benchmarkRunCount: number
+  ): Promise<RuntimeArtifactStorageScan> {
+    if (!Number.isSafeInteger(benchmarkRunCount) || benchmarkRunCount < 0) {
+      throw new AppError(500, "artifact_reference_count_invalid", "Benchmark Artifact 引用计数无效");
+    }
+    const [source, workspace, runs] = await Promise.all([
+      this.readProjectSource(projectId),
+      this.readWorkspace(workspaceId),
+      this.listRuns(projectId)
+    ]);
+    if (!workspace.members.some((member) => member.projectId === projectId && member.skillId === source.skillId)) {
+      throw new AppError(403, "project_not_in_workspace", "该 Skill 不属于指定 Workspace");
+    }
+    const protectedArtifactIds = new Set<string>();
+    for (const run of runs) {
+      if (
+        run.projectId !== projectId || run.skillId !== source.skillId ||
+        !/^artifact-[0-9a-f-]{36}$/iu.test(run.artifactId)
+      ) {
+        throw new AppError(500, "runtime_artifact_reference_invalid", "普通运行包含无效的 RuntimeArtifact 引用");
+      }
+      protectedArtifactIds.add(run.artifactId);
+    }
+    for (const artifactId of benchmarkArtifactIds) {
+      if (!/^artifact-[0-9a-f-]{36}$/iu.test(artifactId)) {
+        throw new AppError(500, "benchmark_artifact_reference_invalid", "Benchmark 包含无效的 RuntimeArtifact 引用");
+      }
+      protectedArtifactIds.add(artifactId);
+    }
+
+    let entries: Dirent[];
+    try {
+      entries = await readdir(this.runtimeArtifactDir(projectId), { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") entries = [];
+      else throw error;
+    }
+    const scannedAt = this.now().toISOString();
+    const cutoffAt = new Date(Date.parse(scannedAt) - RUNTIME_ARTIFACT_ORPHAN_GRACE_MS).toISOString();
+    const cutoff = Date.parse(cutoffAt);
+    const validArtifactIds = new Set<string>();
+    const eligible: RuntimeArtifactStorageScan["eligible"] = [];
+    let totalBytes = 0;
+    let protectedCount = 0;
+    let orphanedCount = 0;
+    let eligibleBytes = 0;
+    let invalidCount = 0;
+
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const match = entry.name.match(/^(artifact-[0-9a-f-]{36})\.json$/iu);
+      if (!entry.isFile() || !match?.[1]) {
+        invalidCount += 1;
+        continue;
+      }
+      const artifactId = match[1];
+      const file = path.join(this.runtimeArtifactDir(projectId), entry.name);
+      try {
+        const [info, parsed] = await Promise.all([
+          lstat(file),
+          readFile(file, "utf8").then((content) => JSON.parse(content) as Partial<RuntimeArtifact>)
+        ]);
+        const createdAt = typeof parsed.createdAt === "string" ? parsed.createdAt : "";
+        const createdTime = Date.parse(createdAt);
+        if (
+          !info.isFile() || info.isSymbolicLink() || parsed.schemaVersion !== "1.0" ||
+          parsed.artifactId !== artifactId || parsed.workspaceId !== workspaceId ||
+          parsed.projectId !== projectId || parsed.skillId !== source.skillId ||
+          !Number.isFinite(createdTime)
+        ) {
+          invalidCount += 1;
+          continue;
+        }
+        validArtifactIds.add(artifactId);
+        totalBytes += info.size;
+        if (protectedArtifactIds.has(artifactId)) protectedCount += 1;
+        else {
+          orphanedCount += 1;
+          if (createdTime <= cutoff) {
+            eligible.push({ artifactId, file, size: info.size, createdAt });
+            eligibleBytes += info.size;
+          }
+        }
+      } catch {
+        invalidCount += 1;
+      }
+    }
+
+    const missingReferencedCount = [...protectedArtifactIds].filter((artifactId) => !validArtifactIds.has(artifactId)).length;
+    return {
+      status: {
+        schemaVersion: "1.0",
+        workspaceId,
+        projectId,
+        skillId: source.skillId,
+        scannedAt,
+        cutoffAt,
+        policy: {
+          schemaVersion: "1.0",
+          cleanupMode: "explicit",
+          orphanGracePeriodMs: RUNTIME_ARTIFACT_ORPHAN_GRACE_MS
+        },
+        totalCount: validArtifactIds.size,
+        totalBytes,
+        protectedCount,
+        orphanedCount,
+        eligibleCount: eligible.length,
+        eligibleBytes,
+        invalidCount,
+        missingReferencedCount,
+        runtimeRunCount: runs.length,
+        benchmarkRunCount
+      },
+      eligible,
+      protectedArtifactIds
+    };
   }
 
   private async readArtifact(projectId: string, artifactId: string): Promise<RuntimeArtifact> {

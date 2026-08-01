@@ -27,6 +27,7 @@ custom-policy:
 ![缺失图片](assets/missing.png)
 [外部规范](https://example.com/spec)
 \`docs/context.md\`
+\`example-contract.md\`
 \`../outside.md\`
 `
       },
@@ -47,10 +48,12 @@ custom-policy:
       expect.objectContaining({ kind: "markdown-link", rawTarget: "docs/context.md#target", status: "resolved", fragment: "target" }),
       expect.objectContaining({ kind: "markdown-image", rawTarget: "assets/missing.png", status: "missing" }),
       expect.objectContaining({ kind: "markdown-link", rawTarget: "https://example.com/spec", status: "external" }),
+      expect.objectContaining({ kind: "inline-code", rawTarget: "example-contract.md", status: "candidate" }),
       expect.objectContaining({ kind: "inline-code", rawTarget: "../outside.md", status: "escaped" })
     ]));
     expect(analysis.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "missing_import_references", severity: "warning" }),
+      expect.objectContaining({ code: "inline_code_reference_candidates", severity: "info" }),
       expect.objectContaining({ code: "escaped_import_references", severity: "warning" })
     ]));
   });

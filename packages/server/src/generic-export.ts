@@ -5,6 +5,7 @@ export function genericEngineCli(): string {
   const edgeKinds = JSON.stringify(graphEdgeTypeRegistry.map((item) => item.kind));
   return [
     "#!/usr/bin/env node",
+    "import { createHash } from 'node:crypto';",
     "import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';",
     "import path from 'node:path';",
     "import { fileURLToPath } from 'node:url';",
@@ -12,10 +13,14 @@ export function genericEngineCli(): string {
     "const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');",
     "const manifest = readJson(path.join(root, 'skill.json'), 'skill.json');",
     "const graph = readJson(path.join(root, 'graph', 'main.json'), 'graph/main.json');",
+    "const packageManifest = readJson(path.join(root, 'export-manifest.json'), 'export-manifest.json');",
+    "validatePackageManifest();",
     "validateGraph();",
     "const command = process.argv[2] ?? 'inspect';",
     "",
-    "if (command === 'inspect') {",
+    "if (command === 'verify') {",
+    "  verifyPackage();",
+    "} else if (command === 'inspect') {",
     "  output({ skillId: manifest.skillId, name: manifest.name, capability: graph.capability, entry: graph.entry ?? null, nodes: graph.nodes.length, edges: graph.edges.length });",
     "} else if (command === 'transitions') {",
     "  const nodeId = process.argv[3];",
@@ -25,8 +30,37 @@ export function genericEngineCli(): string {
     "} else if (command === 'run') {",
     "  runCommand(process.argv[3] ?? 'status');",
     "} else {",
-    "  usage('skill-engine.mjs inspect | transitions <nodeId> [--variables <json>] | run <start|status|next|pause|resume|stop> --state <file>');",
+    "  usage('skill-engine.mjs verify | inspect | transitions <nodeId> [--variables <json>] | run <start|status|next|pause|resume|stop> --state <file>');",
     "}",
+    "",
+    "function validatePackageManifest() {",
+    "  if (!plainObject(packageManifest) || packageManifest.schemaVersion !== '1.0' || packageManifest.profile !== 'generic/1') fail('package_manifest_invalid', 'export-manifest.json 不是受支持的 generic/1 清单');",
+    "  if (packageManifest.skillId !== manifest.skillId || typeof packageManifest.revisionId !== 'string' || typeof packageManifest.contentHash !== 'string') fail('package_identity_mismatch', '导出清单与 skill.json 身份不一致');",
+    "  if (!Array.isArray(packageManifest.files) || packageManifest.files.length < 1) fail('package_manifest_invalid', '导出清单缺少文件列表');",
+    "  const paths = new Set();",
+    "  for (const file of packageManifest.files) {",
+    "    if (!plainObject(file) || !safePackagePath(file.path) || paths.has(file.path)) fail('package_manifest_invalid', '导出清单包含无效或重复路径');",
+    "    if (!Number.isInteger(file.size) || file.size < 0 || typeof file.sha256 !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(file.sha256)) fail('package_manifest_invalid', `导出清单文件 ${file.path} 的大小或 SHA-256 无效`);",
+    "    paths.add(file.path);",
+    "  }",
+    "  if (!paths.has('skill.json') || !paths.has('graph/main.json') || !paths.has('engine/skill-engine.mjs') || !paths.has('engine/README.md')) fail('package_manifest_invalid', '导出清单缺少通用包必需文件');",
+    "}",
+    "",
+    "function verifyPackage() {",
+    "  const mismatches = []; let totalBytes = 0;",
+    "  for (const file of packageManifest.files) {",
+    "    const target = packageFile(file.path); let bytes;",
+    "    try { bytes = readFileSync(target); } catch (error) { mismatches.push({ path: file.path, code: 'missing', message: error.code === 'ENOENT' ? '文件不存在' : error.message }); continue; }",
+    "    totalBytes += bytes.length;",
+    "    const actualHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;",
+    "    if (bytes.length !== file.size || actualHash !== file.sha256) mismatches.push({ path: file.path, code: 'mismatch', expectedSize: file.size, actualSize: bytes.length, expectedSha256: file.sha256, actualSha256: actualHash });",
+    "  }",
+    "  if (mismatches.length) fail('package_integrity_failed', `${mismatches.length} 个导出文件缺失或内容不一致`, { checkedFiles: packageManifest.files.length, mismatches });",
+    "  output({ schemaVersion: '1.0', profile: packageManifest.profile, skillId: packageManifest.skillId, revisionId: packageManifest.revisionId, contentHash: packageManifest.contentHash, valid: true, checkedFiles: packageManifest.files.length, totalBytes });",
+    "}",
+    "",
+    "function safePackagePath(value) { return typeof value === 'string' && value.length > 0 && value.length <= 1024 && !value.includes('\\\\') && !value.startsWith('/') && !/[\\u0000-\\u001f]/.test(value) && value.split('/').every((segment) => segment && segment !== '.' && segment !== '..'); }",
+    "function packageFile(value) { const target = path.resolve(root, ...value.split('/')); if (target !== root && !target.startsWith(root + path.sep)) fail('package_manifest_invalid', `导出清单路径越界: ${value}`); return target; }",
     "",
     "function runCommand(action) {",
     "  const statePath = option('--state');",
@@ -188,7 +222,7 @@ export function genericEngineCli(): string {
     "function reject(state, code, message, requestedNodeId, allowedTransitions = state.status === 'running' ? transitions(state.currentNodeId, state.variables, state) : [], newEvents = []) { output({ status: 'rejected', state, allowedTransitions, newEvents, rejection: { code, message, ...(requestedNodeId ? { requestedNodeId } : {}) } }); }",
     "function output(value) { process.stdout.write(JSON.stringify(value, null, 2) + '\\n'); }",
     "function usage(message) { process.stderr.write(`Usage: ${message}\\n`); process.exit(2); }",
-    "function fail(code, message) { process.stderr.write(JSON.stringify({ error: { code, message } }) + '\\n'); process.exit(1); }",
+    "function fail(code, message, details) { process.stderr.write(JSON.stringify({ error: { code, message, ...(details === undefined ? {} : { details }) } }) + '\\n'); process.exit(1); }",
     ""
   ].join("\n");
 }
@@ -197,6 +231,12 @@ export function genericEngineUsage(): string {
   return `# Generic Skill Engine
 
 Requires Node.js 20 or newer. The CLI has no npm dependencies, does not access the network, and never executes files from \`scripts/\`.
+
+## Verify
+
+\`node engine/skill-engine.mjs verify\`
+
+Checks every file declared by \`export-manifest.json\` against its recorded size and SHA-256 before an external Agent uses the package.
 
 ## Inspect
 

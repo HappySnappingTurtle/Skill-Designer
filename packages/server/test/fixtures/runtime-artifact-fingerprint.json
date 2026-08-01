@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "1.0",
+  "description": "默认 workflow Skill 的规范项目字节与固定运行输入在所有支持系统上必须得到相同指纹",
+  "initialVariables": {
+    "title": "跨系统指纹",
+    "nested": {
+      "z": 2,
+      "a": 1
+    },
+    "lines": "第一行\r\n第二行",
+    "enabled": true,
+    "count": 3
+  },
+  "expected": {
+    "projectContentHash": "sha256:65669796b2b2ca389935d1df4d78d2758c54d45cc99a1f95748a5fba7228dc64",
+    "inputHash": "sha256:d42448e273b860a11a03db13ede8f20c8bbfce76ffcfce13014968eb230b7708",
+    "value": "sha256:503d6f6d52dcc486f33912b2944bfe55d699302375cce771c0f2ec126436c40a"
+  }
+}

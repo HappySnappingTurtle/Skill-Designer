@@ -8,10 +8,12 @@
   ],
   "scripts": {
     "build": "npm run build -w @skill-designer/engine && npm run build -w @skill-designer/server && npm run build -w @skill-designer/web",
-    "ci": "npm run lint && npm run typecheck && npm test -- --run && npm run build",
+    "ci": "npm run lint && npm run typecheck && npm test -- --run && npm run build && npm run release:build",
     "dev": "node scripts/dev.mjs",
     "lint": "node scripts/lint-boundaries.mjs",
     "preview": "npm run build && node scripts/preview.mjs",
+    "release": "npm run build && npm run release:build",
+    "release:build": "node scripts/release/build-release.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -b --pretty false",

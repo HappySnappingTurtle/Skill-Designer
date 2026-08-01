@@ -16,6 +16,26 @@ const EDGE_KINDS = new Set<GraphEdgeKind>(graphEdgeTypeRegistry.map((item) => it
 const ID_PATTERN = /^[a-z][a-z0-9._-]{1,127}$/i;
 const QUERY_KINDS = new Set(["graph.node", "graph.neighborhood", "graph.search", "document.slice"]);
 
+export function isSkillDocumentPath(value: string): boolean {
+  if (!value || value !== value.normalize("NFC") || value.length > 500 || value.includes("\\") || value.startsWith("/")) return false;
+  const segments = value.split("/");
+  const reserved = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu;
+  return value.toLowerCase().endsWith(".md") && pathIsNormalized(value) && segments.every((segment) =>
+    Boolean(segment) && segment !== "." && segment !== ".." &&
+    !/[\u0000-\u001f<>:"|?*]/u.test(segment) && !/[. ]$/u.test(segment) && !reserved.test(segment)
+  );
+}
+
+function pathIsNormalized(value: string): boolean {
+  const normalized: string[] = [];
+  for (const segment of value.split("/")) {
+    if (segment === ".") continue;
+    if (segment === "..") normalized.pop();
+    else normalized.push(segment);
+  }
+  return normalized.join("/") === value;
+}
+
 export function lintGraph(graph: SkillGraph): GraphLintIssue[] {
   const issues: GraphLintIssue[] = [];
   const nodes = new Map<string, GraphNode>();
@@ -37,6 +57,9 @@ export function lintGraph(graph: SkillGraph): GraphLintIssue[] {
     else nodes.set(node.id, node);
     if (!NODE_KINDS.has(node.kind)) error(issues, `${nodePath}.kind`, "unknown_node_kind", "节点类型未注册");
     if (!node.title.trim()) error(issues, `${nodePath}.title`, "required", "节点标题不能为空");
+    if (node.doc !== undefined && (typeof node.doc !== "string" || !isSkillDocumentPath(node.doc))) {
+      error(issues, `${nodePath}.doc`, "document_path_invalid", "节点文档必须是项目内安全的 Markdown 相对路径");
+    }
     lintNodeLookups(node, nodePath, issues);
   });
 
@@ -130,17 +153,11 @@ function lintNodeLookups(node: GraphNode, nodePath: string, issues: GraphLintIss
       if (candidate.limit !== undefined && (!Number.isInteger(candidate.limit) || Number(candidate.limit) < 1 || Number(candidate.limit) > 20)) error(issues, `${queryPath}.limit`, "lookup_limit_invalid", "搜索上限必须为 1 到 20");
       if (candidate.nodeKinds !== undefined && (!Array.isArray(candidate.nodeKinds) || candidate.nodeKinds.some((kind) => typeof kind !== "string" || !NODE_KINDS.has(kind as GraphNodeKind)))) error(issues, `${queryPath}.nodeKinds`, "lookup_node_kinds_invalid", "节点类型过滤无效");
     } else {
-      if (typeof candidate.path !== "string" || !isDocumentPath(candidate.path)) error(issues, `${queryPath}.path`, "lookup_document_path_invalid", "文档查询路径必须是 SKILL.md 或 docs/*.md");
+      if (typeof candidate.path !== "string" || !isSkillDocumentPath(candidate.path)) error(issues, `${queryPath}.path`, "lookup_document_path_invalid", "文档查询路径必须是项目内安全的 Markdown 相对路径");
       if (typeof candidate.anchor !== "string" || !candidate.anchor.trim() || candidate.anchor.length > 500) error(issues, `${queryPath}.anchor`, "lookup_anchor_invalid", "文档查询需要精确标题路径或锚点");
       if (candidate.fallback !== undefined && candidate.fallback !== "none" && candidate.fallback !== "title") error(issues, `${queryPath}.fallback`, "lookup_fallback_invalid", "文档降级策略无效");
     }
   });
-}
-
-function isDocumentPath(value: string): boolean {
-  if (value === "SKILL.md") return true;
-  if (!value.startsWith("docs/") || !value.endsWith(".md") || value.includes("\\")) return false;
-  return value.split("/").every((segment) => Boolean(segment) && segment !== "." && segment !== "..");
 }
 
 export function flowTargets(graph: SkillGraph, currentNodeId: string): string[] {
